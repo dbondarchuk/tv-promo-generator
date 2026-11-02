@@ -1,0 +1,47 @@
+services:
+  promo-generator:
+    # Local build (default). To pull from GHCR instead:
+    #   image: ghcr.io/<owner>/tv-promo-generator:latest
+    #   # build: .
+    build: .
+    image: tv-promo-generator:latest
+    ports:
+      - "5174:5174"
+    environment:
+      ETV_URL: http://ersatztv:8409
+      ETV_API_KEY: ${ETV_API_KEY:-}
+      ETV_DATABASE: /etv-config/ersatztv.sqlite3
+      LIBRARY_PATH: /library
+      ETV_PATH_PREFIX: /media
+      OUTPUT_PATH: /data/output
+      ETV_LIBRARY_PATH: /promos
+      CACHE_PATH: /data/cache
+      CONFIG_PATH: /data/config
+      HARDWARE_ACCELERATION: ${HARDWARE_ACCELERATION:-None}
+      VAAPI_DEVICE: /dev/dri/renderD128
+      VOICE_ENABLED: "true"
+      REGEN_LEAD_MINUTES: "3"
+      # Optional for Intel VAAPI:
+      # LIBVA_DRIVER_NAME: iHD
+    volumes:
+      # Media library as seen by this app (read-only)
+      - ${MEDIA_PATH:-./media}:/library:ro
+      # Promo output — mount the same host folder into ErsatzTV as ETV_LIBRARY_PATH
+      - ${PROMO_PATH:-./output}:/data/output
+      - ${PROMO_PATH:-./output}:/promos
+      - ${CONFIG_PATH:-./config}:/data/config
+      - ${CACHE_PATH:-./cache}:/data/cache
+      # ErsatzTV config (read-write for Push)
+      - ${ETV_CONFIG_PATH:-./etv-config}:/etv-config
+    # Intel / AMD VAAPI or QSV:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # NVIDIA NVENC:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped

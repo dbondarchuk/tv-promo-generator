@@ -1,0 +1,50 @@
+import type { AppSettings, ChannelView, JobInfo, PushResult } from '@promo/shared';
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    ...init,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  getSettings: () => request<AppSettings>('/api/settings'),
+  saveSettings: (settings: AppSettings) =>
+    request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  getChannels: () => request<ChannelView[]>('/api/channels'),
+  patchChannel: (number: string, patch: Record<string, unknown>) =>
+    request(`/api/channels/${encodeURIComponent(number)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  generateAll: () => request<{ jobs: JobInfo[] }>('/api/generate', { method: 'POST', body: '{}' }),
+  generateOne: (number: string) =>
+    request<{ job: JobInfo }>(`/api/generate/${encodeURIComponent(number)}`, { method: 'POST', body: '{}' }),
+  getJobs: () => request<JobInfo[]>('/api/jobs'),
+  /** Live job updates via SSE. Returns an unsubscribe function. */
+  subscribeJobs: (onJobs: (jobs: JobInfo[]) => void, onError?: (err: Error) => void): (() => void) => {
+    const es = new EventSource('/api/jobs/stream');
+    const onMessage = (ev: MessageEvent<string>) => {
+      try {
+        onJobs(JSON.parse(ev.data) as JobInfo[]);
+      } catch (err) {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+    es.addEventListener('jobs', onMessage as EventListener);
+    es.onerror = () => {
+      // Browser auto-reconnects; surface a soft status only.
+      onError?.(new Error('Job stream disconnected — reconnecting…'));
+    };
+    return () => {
+      es.removeEventListener('jobs', onMessage as EventListener);
+      es.close();
+    };
+  },
+  push: () => request<PushResult>('/api/push', { method: 'POST', body: '{}' }),
+};
