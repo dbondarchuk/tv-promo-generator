@@ -79,6 +79,7 @@ export async function backupErsatzTvDatabase(
   if (!settings.etvDatabase?.trim()) {
     throw new Error("ErsatzTV database path is not configured");
   }
+
   if (!fs.existsSync(sourcePath)) {
     throw new Error(`ErsatzTV database not found: ${sourcePath}`);
   }
@@ -195,6 +196,7 @@ export async function rollbackErsatzTvDatabase(
   if (!settings.etvDatabase?.trim()) {
     throw new Error("ErsatzTV database path is not configured");
   }
+
   if (!fs.existsSync(backup.path)) {
     throw new Error(`Backup file missing: ${backup.path}`);
   }

@@ -167,9 +167,11 @@ async function resolveFile(
         : "No media file path in database",
     };
   }
+
   if (row.durationSeconds && row.durationSeconds > 0) {
     return { filePath: candidate, durationSeconds: row.durationSeconds };
   }
+
   if (!options.allowProbe) {
     return { filePath: candidate, durationSeconds: undefined };
   }

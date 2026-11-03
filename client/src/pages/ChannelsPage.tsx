@@ -186,6 +186,7 @@ export function ChannelsPage() {
           ) {
             return prev;
           }
+
           if (prev && nextJobs.some((job) => job.id === prev)) return prev;
 
           const runningExclusive = nextJobs.find(
@@ -331,6 +332,7 @@ export function ChannelsPage() {
   if (configured === null) {
     return <div className="panel muted">Loading…</div>;
   }
+
   if (!configured) {
     return (
       <div className="panel setup-needed">

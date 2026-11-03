@@ -249,12 +249,14 @@ export async function pushToErsatzTv(
               message: "No playout found for channel",
             };
           }
+
           if (!isClassicSchedule(playout.scheduleKind)) {
             return {
               ok: false as const,
               message: `Skipped: playout kind ${String(playout.scheduleKind)} is not classic`,
             };
           }
+
           if (!playout.programScheduleId) {
             return {
               ok: false as const,

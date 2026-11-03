@@ -4,9 +4,9 @@
  * Mechanical blank-line style from .cursor/rules/code-style.mdc.
  *
  * Requires a blank line after a multiline statement, after a braced
- * control-flow statement, after a guard clause, and around function and class
- * declarations. Keeps consecutive guard clauses and function overloads
- * together, and removes blank lines between call arguments.
+ * control-flow statement (including between consecutive if blocks), after a
+ * guard clause, and around function and class declarations. Keeps function
+ * overloads together, and removes blank lines between call arguments.
  *
  * A blank line between ordinary one-line statements is left in place. That
  * break is a logical grouping, which this rule cannot infer.
@@ -139,6 +139,7 @@ module.exports = {
       if (!name || name !== functionName(next)) {
         return false;
       }
+
       if (!isFunctionOverload(prev)) {
         return false;
       }
@@ -211,9 +212,11 @@ module.exports = {
       if (isGuardIf(prev) && !isGuardIf(next)) {
         return true;
       }
+
       if (isMultiline(prev) || isBlockControlFlow(prev)) {
         return true;
       }
+
       if (
         isFunctionOrClassDeclaration(prev) ||
         isFunctionOrClassDeclaration(next)
@@ -309,10 +312,7 @@ module.exports = {
           continue;
         }
 
-        if (
-          isOverloadPair(prev, next) ||
-          (isGuardIf(prev) && isGuardIf(next))
-        ) {
+        if (isOverloadPair(prev, next)) {
           enforceNoBlankLine(prev, next, "unexpectedBlankLine");
           continue;
         }

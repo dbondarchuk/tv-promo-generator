@@ -59,6 +59,7 @@ export function openDb(
   if (!dbPath) {
     throw new Error("ErsatzTV database path is not configured");
   }
+
   if (!fs.existsSync(dbPath)) {
     throw new Error(`ErsatzTV database not found: ${dbPath}`);
   }

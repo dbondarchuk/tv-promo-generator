@@ -176,6 +176,7 @@ export function panelWidthExpr(
   if (itemCount === 1) return String(g.frameW);
   if (itemCount === 2)
     return panelIndex === 0 ? widthExprTwoA(g) : widthExprTwoB(g);
+
   if (panelIndex === 0) return widthExprA(g);
   if (panelIndex === 1) return widthExprB(g);
 
@@ -250,6 +251,7 @@ export function barPixelWidth(
   if (fullWidth || itemCount === 1) {
     return Math.max(1, frameW - margin * 2);
   }
+
   if (itemCount === 2) {
     return Math.max(1, g.width75 - margin - 8);
   }

@@ -56,6 +56,7 @@ function alreadyAvailable() {
   if (runnable(toolsF) && runnable(toolsP)) {
     return { ffmpeg: toolsF, ffprobe: toolsP, source: "tools" };
   }
+
   if (runnable(`ffmpeg${exe}`) && runnable(`ffprobe${exe}`)) {
     return { ffmpeg: `ffmpeg${exe}`, ffprobe: `ffprobe${exe}`, source: "path" };
   }
