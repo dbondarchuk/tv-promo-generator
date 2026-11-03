@@ -19,8 +19,16 @@ services:
       CONFIG_PATH: /data/config
       HARDWARE_ACCELERATION: ${HARDWARE_ACCELERATION:-None}
       VAAPI_DEVICE: /dev/dri/renderD128
-      VOICE_ENABLED: "true"
+      VOICE_ENABLED: ${VOICE_ENABLED:-true}
       REGEN_LEAD_MINUTES: "3"
+      # Wyoming Piper (TCP). Host machine IP/hostname — not localhost from inside the container.
+      PIPER_URL: ${PIPER_URL:-http://192.168.0.151:10200}
+      PIPER_VOICE_EN: ${PIPER_VOICE_EN:-en_GB-alba-medium}
+      PIPER_VOICE_UK: ${PIPER_VOICE_UK:-uk_UA-lada-x_low}
+      # PIPER_VOICE: ${PIPER_VOICE:-}
+      # PIPER_SPEAKER: ${PIPER_SPEAKER:-}
+      VOICE_PAUSE_MS: ${VOICE_PAUSE_MS:-450}
+      TTS_TIMEOUT_MS: ${TTS_TIMEOUT_MS:-20000}
       # Optional for Intel VAAPI:
       # LIBVA_DRIVER_NAME: iHD
     volumes:

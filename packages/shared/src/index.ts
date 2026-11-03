@@ -109,8 +109,36 @@ export interface PushChannelResult {
   replacedPreRoll?: string;
 }
 
+export interface EtvBackupInfo {
+  id: string;
+  createdAt: string;
+  sourcePath: string;
+  path: string;
+  bytes: number;
+  reason: 'manual' | 'pre-push';
+}
+
 export interface PushResult {
   results: PushChannelResult[];
+  backup?: EtvBackupInfo;
+}
+
+export interface SettingsCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface ValidateSettingsResult {
+  ok: boolean;
+  checks: SettingsCheck[];
+}
+
+export interface RollbackResult {
+  ok: boolean;
+  backup: EtvBackupInfo;
+  message: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

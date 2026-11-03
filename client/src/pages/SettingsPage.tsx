@@ -1,5 +1,11 @@
 import { FormEvent, useEffect, useState } from 'react';
-import type { AppSettings, HardwareAcceleration, VaapiDriver, VideoCodec } from '@promo/shared';
+import type {
+  AppSettings,
+  HardwareAcceleration,
+  VaapiDriver,
+  ValidateSettingsResult,
+  VideoCodec,
+} from '@promo/shared';
 import { api } from '../api';
 
 const HW: HardwareAcceleration[] = ['None', 'Nvenc', 'Qsv', 'Vaapi', 'Amf', 'VideoToolbox'];
@@ -11,6 +17,8 @@ export function SettingsPage() {
   const [message, setMessage] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [validation, setValidation] = useState<ValidateSettingsResult | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch((e) => setError(String(e.message || e)));
@@ -30,6 +38,23 @@ export function SettingsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onValidate() {
+    if (!settings) return;
+    setValidating(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await api.validateSettings(settings);
+      setValidation(result);
+      setMessage(result.ok ? 'All checks passed.' : 'Some checks failed — see below.');
+    } catch (err) {
+      setValidation(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setValidating(false);
     }
   }
 
@@ -53,6 +78,7 @@ export function SettingsPage() {
                   ? e.target.checked
                   : raw;
             setSettings({ ...settings!, [key]: value as AppSettings[K] });
+            setValidation(null);
           }}
           checked={type === 'checkbox' ? Boolean(settings![key]) : undefined}
         />
@@ -84,7 +110,10 @@ export function SettingsPage() {
           Hardware acceleration
           <select
             value={settings.hardwareAcceleration}
-            onChange={(e) => setSettings({ ...settings, hardwareAcceleration: e.target.value as HardwareAcceleration })}
+            onChange={(e) => {
+              setSettings({ ...settings, hardwareAcceleration: e.target.value as HardwareAcceleration });
+              setValidation(null);
+            }}
           >
             {HW.map((h) => <option key={h} value={h}>{h}</option>)}
           </select>
@@ -93,7 +122,10 @@ export function SettingsPage() {
           Video codec
           <select
             value={settings.videoCodec}
-            onChange={(e) => setSettings({ ...settings, videoCodec: e.target.value as VideoCodec })}
+            onChange={(e) => {
+              setSettings({ ...settings, videoCodec: e.target.value as VideoCodec });
+              setValidation(null);
+            }}
           >
             {CODECS.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -108,7 +140,10 @@ export function SettingsPage() {
           VAAPI driver
           <select
             value={settings.vaapiDriver}
-            onChange={(e) => setSettings({ ...settings, vaapiDriver: e.target.value as VaapiDriver })}
+            onChange={(e) => {
+              setSettings({ ...settings, vaapiDriver: e.target.value as VaapiDriver });
+              setValidation(null);
+            }}
           >
             {DRIVERS.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
@@ -122,7 +157,10 @@ export function SettingsPage() {
           Enable voice-over
           <select
             value={settings.voiceEnabled ? 'true' : 'false'}
-            onChange={(e) => setSettings({ ...settings, voiceEnabled: e.target.value === 'true' })}
+            onChange={(e) => {
+              setSettings({ ...settings, voiceEnabled: e.target.value === 'true' });
+              setValidation(null);
+            }}
           >
             <option value="true">On</option>
             <option value="false">Off</option>
@@ -132,10 +170,31 @@ export function SettingsPage() {
       </div>
 
       <div className="row" style={{ marginTop: 18 }}>
-        <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>
-        {message && <span className="success">{message}</span>}
+        <button type="submit" disabled={saving || validating}>{saving ? 'Saving…' : 'Save settings'}</button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={saving || validating}
+          onClick={() => void onValidate()}
+        >
+          {validating ? 'Validating…' : 'Validate settings'}
+        </button>
+        {message && <span className={validation && !validation.ok ? 'error' : 'success'}>{message}</span>}
         {error && <span className="error">{error}</span>}
       </div>
+
+      {validation && (
+        <div style={{ marginTop: 16 }}>
+          <h3>Validation {validation.ok ? 'passed' : 'failed'}</h3>
+          <ul className="item-list">
+            {validation.checks.map((c) => (
+              <li key={c.id} className={c.ok ? 'success' : 'error'}>
+                <strong>{c.label}</strong>: {c.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </form>
   );
 }

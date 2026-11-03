@@ -1,4 +1,12 @@
-import type { AppSettings, ChannelView, JobInfo, PushResult } from '@promo/shared';
+import type {
+  AppSettings,
+  ChannelView,
+  EtvBackupInfo,
+  JobInfo,
+  PushResult,
+  RollbackResult,
+  ValidateSettingsResult,
+} from '@promo/shared';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -16,6 +24,11 @@ export const api = {
   getSettings: () => request<AppSettings>('/api/settings'),
   saveSettings: (settings: AppSettings) =>
     request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  validateSettings: (settings: AppSettings) =>
+    request<ValidateSettingsResult>('/api/settings/validate', {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
   getChannels: () => request<ChannelView[]>('/api/channels'),
   patchChannel: (number: string, patch: Record<string, unknown>) =>
     request(`/api/channels/${encodeURIComponent(number)}`, {
@@ -47,4 +60,12 @@ export const api = {
     };
   },
   push: () => request<PushResult>('/api/push', { method: 'POST', body: '{}' }),
+  listBackups: () =>
+    request<{ backups: EtvBackupInfo[]; latestPush: EtvBackupInfo | null }>('/api/backups'),
+  createBackup: () => request<EtvBackupInfo>('/api/backups', { method: 'POST', body: '{}' }),
+  rollback: (backupId?: string) =>
+    request<RollbackResult>('/api/rollback', {
+      method: 'POST',
+      body: JSON.stringify(backupId ? { backupId } : {}),
+    }),
 };

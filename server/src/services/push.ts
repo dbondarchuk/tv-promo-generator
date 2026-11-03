@@ -13,7 +13,11 @@ import {
   upsertFillerPreset,
 } from '../ersatztv/db.js';
 import { fileExists, promoOutputFile } from '../util/paths.js';
+import { createLogger } from '../util/log.js';
+import { backupErsatzTvDatabase } from './etv-backup.js';
 import { loadChannelViews } from './channels.js';
+
+const log = createLogger('push');
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -34,6 +38,9 @@ export async function pushToErsatzTv(settings: AppSettings): Promise<PushResult>
   const etvLibraryPath = settings.etvLibraryPath || settings.outputPath;
   const api = new EtvApiClient(settings.etvUrl, settings.etvApiKey);
 
+  const backup = await backupErsatzTvDatabase(settings, 'pre-push');
+  log.info('pre-push backup ready', { id: backup.id, bytes: backup.bytes });
+
   const db = openDb(settings.etvDatabase, false);
   let libraryId: number;
   try {
@@ -41,6 +48,7 @@ export async function pushToErsatzTv(settings: AppSettings): Promise<PushResult>
   } catch (err) {
     db.close();
     return {
+      backup,
       results: channels.map((c) => ({
         channelNumber: c.number,
         channelName: c.name,
@@ -55,6 +63,7 @@ export async function pushToErsatzTv(settings: AppSettings): Promise<PushResult>
     await api.scanLibrary(libraryId);
   } catch (err) {
     return {
+      backup,
       results: channels.map((c) => ({
         channelNumber: c.number,
         channelName: c.name,
@@ -186,5 +195,5 @@ export async function pushToErsatzTv(settings: AppSettings): Promise<PushResult>
     }
   }
 
-  return { results };
+  return { results, backup };
 }

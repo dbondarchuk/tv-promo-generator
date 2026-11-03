@@ -9,8 +9,15 @@ import {
   updateChannelOverride,
 } from './config.js';
 import { invalidateChannelCaches, loadChannelViews } from './services/channels.js';
+import {
+  backupErsatzTvDatabase,
+  getLatestPushBackup,
+  listErsatzTvBackups,
+  rollbackErsatzTvDatabase,
+} from './services/etv-backup.js';
 import { JobQueue } from './services/jobs.js';
 import { pushToErsatzTv } from './services/push.js';
+import { validateSettings } from './services/validate-settings.js';
 import { createLogger } from './util/log.js';
 
 const log = createLogger('http');
@@ -51,6 +58,53 @@ export function createRouter(opts: {
     invalidateChannelCaches();
     log.info('settings updated');
     res.json(next);
+  });
+
+  router.post('/settings/validate', async (req, res) => {
+    try {
+      const candidate = { ...opts.getSettings(), ...(req.body ?? {}) };
+      const result = await validateSettings(candidate);
+      res.json(result);
+    } catch (err) {
+      log.error('POST /settings/validate failed', err instanceof Error ? err.message : String(err));
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get('/backups', (_req, res) => {
+    try {
+      const settings = opts.getSettings();
+      res.json({
+        backups: listErsatzTvBackups(settings),
+        latestPush: getLatestPushBackup(settings),
+      });
+    } catch (err) {
+      log.error('GET /backups failed', err instanceof Error ? err.message : String(err));
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/backups', async (_req, res) => {
+    try {
+      const backup = await backupErsatzTvDatabase(opts.getSettings(), 'manual');
+      res.json(backup);
+    } catch (err) {
+      log.error('POST /backups failed', err instanceof Error ? err.message : String(err));
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/rollback', async (req, res) => {
+    try {
+      const backupId = typeof req.body?.backupId === 'string' ? req.body.backupId : undefined;
+      log.info('rollback ErsatzTV database', { backupId: backupId ?? 'latest' });
+      const result = await rollbackErsatzTvDatabase(opts.getSettings(), backupId);
+      invalidateChannelCaches();
+      res.json(result);
+    } catch (err) {
+      log.error('POST /rollback failed', err instanceof Error ? err.message : String(err));
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get('/channels', async (_req, res) => {

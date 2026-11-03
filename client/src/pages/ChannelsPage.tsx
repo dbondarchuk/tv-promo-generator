@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChannelView, JobInfo, PushResult } from '@promo/shared';
+import type { ChannelView, EtvBackupInfo, JobInfo, PushResult } from '@promo/shared';
 import { api } from '../api';
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function formatLogTime(iso: string): string {
   try {
@@ -17,6 +23,8 @@ export function ChannelsPage() {
   const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [busy, setBusy] = useState(false);
   const [pushResult, setPushResult] = useState<PushResult | null>(null);
+  const [latestPushBackup, setLatestPushBackup] = useState<EtvBackupInfo | null>(null);
+  const [rollbackMessage, setRollbackMessage] = useState('');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
@@ -38,11 +46,21 @@ export function ChannelsPage() {
     }
   }, []);
 
+  const refreshBackups = useCallback(async () => {
+    try {
+      const { latestPush } = await api.listBackups();
+      setLatestPushBackup(latestPush);
+    } catch {
+      // Backups are optional UI; don't block the page.
+    }
+  }, []);
+
   useEffect(() => {
     void refreshChannels();
+    void refreshBackups();
     const id = setInterval(() => void refreshChannels(), 15_000);
     return () => clearInterval(id);
-  }, [refreshChannels]);
+  }, [refreshChannels, refreshBackups]);
 
   useEffect(() => {
     setStreamStatus('connecting');
@@ -109,14 +127,47 @@ export function ChannelsPage() {
   }
 
   async function push() {
-    if (!window.confirm('Push will write to ersatztv.sqlite3 and reset classic playouts for enabled channels. Continue?')) {
+    if (!window.confirm(
+      'Push will back up ersatztv.sqlite3, then write fillers/schedules and reset classic playouts for enabled channels. Continue?',
+    )) {
       return;
     }
     setBusy(true);
     setPushResult(null);
+    setRollbackMessage('');
+    setError('');
     try {
       const result = await api.push();
       setPushResult(result);
+      if (result.backup) setLatestPushBackup(result.backup);
+      else await refreshBackups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      await refreshBackups();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rollback() {
+    if (!latestPushBackup) {
+      setError('No pre-push backup available to roll back.');
+      return;
+    }
+    if (!window.confirm(
+      `Restore ersatztv.sqlite3 from backup ${latestPushBackup.id}?\n\n` +
+        'If ErsatzTV has the DB locked, stop it first, roll back, then start it again.',
+    )) {
+      return;
+    }
+    setBusy(true);
+    setRollbackMessage('');
+    setError('');
+    try {
+      const result = await api.rollback(latestPushBackup.id);
+      setRollbackMessage(result.message);
+      await refreshChannels();
+      await refreshBackups();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -147,12 +198,36 @@ export function ChannelsPage() {
             <button className="secondary" disabled={busy} onClick={() => void refreshChannels()}>Refresh</button>
             <button disabled={busy} onClick={() => void generateAll()}>Generate all</button>
             <button className="success" disabled={busy} onClick={() => void push()}>Push to ErsatzTV</button>
+            <button
+              className="danger"
+              disabled={busy || !latestPushBackup}
+              title={latestPushBackup ? `Restore backup ${latestPushBackup.id}` : 'No pre-push backup yet'}
+              onClick={() => void rollback()}
+            >
+              Rollback DB
+            </button>
           </div>
         </div>
         {error && <p className="error">{error}</p>}
+        {rollbackMessage && <p className="success">{rollbackMessage}</p>}
+        {latestPushBackup && (
+          <p className="muted" style={{ marginTop: 8 }}>
+            Last pre-push backup: <code>{latestPushBackup.id}</code>
+            {' · '}
+            {formatBytes(latestPushBackup.bytes)}
+            {' · '}
+            {new Date(latestPushBackup.createdAt).toLocaleString()}
+          </p>
+        )}
         {pushResult && (
           <div style={{ marginTop: 12 }}>
             <h3>Push results</h3>
+            {pushResult.backup && (
+              <p className="success">
+                DB backed up before push: <code>{pushResult.backup.id}</code>
+                {' '}({formatBytes(pushResult.backup.bytes)})
+              </p>
+            )}
             <ul className="item-list">
               {pushResult.results.map((r) => (
                 <li key={r.channelNumber} className={r.ok ? 'success' : 'error'}>
