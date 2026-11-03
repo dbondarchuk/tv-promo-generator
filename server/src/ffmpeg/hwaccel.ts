@@ -16,7 +16,8 @@ export function buildEncoderPlan(settings: AppSettings): EncoderPlan {
     case 'Nvenc':
       return {
         videoEncoder: isHevc ? 'hevc_nvenc' : 'h264_nvenc',
-        inputArgs: ['-hwaccel', 'cuda'],
+        // Complex filtergraphs need system-memory frames; decode in software.
+        inputArgs: [],
         outputVideoArgs: [
           '-c:v', isHevc ? 'hevc_nvenc' : 'h264_nvenc',
           '-preset', settings.videoPreset || 'p4',
@@ -28,7 +29,8 @@ export function buildEncoderPlan(settings: AppSettings): EncoderPlan {
     case 'Qsv':
       return {
         videoEncoder: isHevc ? 'hevc_qsv' : 'h264_qsv',
-        inputArgs: ['-hwaccel', 'qsv'],
+        // Do not use -hwaccel qsv here: decode+filters need system frames.
+        inputArgs: [],
         outputVideoArgs: [
           '-c:v', isHevc ? 'hevc_qsv' : 'h264_qsv',
           '-b:v', bitrate,
@@ -89,7 +91,32 @@ export function globalHwArgs(settings: AppSettings): string[] {
     }
     return args;
   }
+  if (settings.hardwareAcceleration === 'Qsv') {
+    const device = settings.vaapiDevice || '/dev/dri/renderD128';
+    return [
+      '-init_hw_device', `qsv=hw,child_device=${device}`,
+      '-filter_hw_device', 'hw',
+    ];
+  }
   return [];
+}
+
+/** True when stderr looks like a missing/broken GPU encode path (safe to soft-fallback). */
+export function isHardwareEncodeFailure(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  return (
+    text.includes('error initializing an mfx session') ||
+    text.includes('device creation failed') ||
+    text.includes('device setup failed') ||
+    text.includes('no device available for decoder') ||
+    text.includes('cannot load libcuda') ||
+    text.includes('no nvenc capable devices') ||
+    text.includes('failed to create a cuda context') ||
+    text.includes('vaapi') && text.includes('failed') ||
+    text.includes('qsv') && (text.includes('failed') || text.includes('error')) ||
+    text.includes('nvenc') && (text.includes('failed') || text.includes('error')) ||
+    text.includes('impossible to open') && text.includes('/dev/dri')
+  );
 }
 
 /**

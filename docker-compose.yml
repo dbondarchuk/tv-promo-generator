@@ -17,8 +17,9 @@ services:
       ETV_LIBRARY_PATH: /promos
       CACHE_PATH: /data/cache
       CONFIG_PATH: /data/config
+      # Prefer None (CPU) or Vaapi (Intel/AMD with /dev/dri). Qsv needs working oneVPL/MFX.
       HARDWARE_ACCELERATION: ${HARDWARE_ACCELERATION:-None}
-      VAAPI_DEVICE: /dev/dri/renderD128
+      VAAPI_DEVICE: ${VAAPI_DEVICE:-/dev/dri/renderD128}
       VOICE_ENABLED: ${VOICE_ENABLED:-true}
       REGEN_LEAD_MINUTES: "3"
       # Wyoming Piper (TCP). Host machine IP/hostname — not localhost from inside the container.
@@ -41,9 +42,12 @@ services:
       - ${CACHE_PATH:-./cache}:/data/cache
       # ErsatzTV config (read-write for Push)
       - ${ETV_CONFIG_PATH:-./etv-config}:/etv-config
-    # Intel / AMD VAAPI or QSV:
+    # Required for Vaapi/Qsv (Intel/AMD). Leave commented for CPU-only.
     # devices:
     #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
     # NVIDIA NVENC:
     # deploy:
     #   resources:

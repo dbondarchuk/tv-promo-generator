@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AppSettings, parseResolution } from '@promo/shared';
 import { createLowerThirdBar } from '../color.js';
-import { buildEncoderPlan, escapeDrawtext, escapeFilterPath, globalHwArgs } from '../ffmpeg/hwaccel.js';
+import {
+  buildEncoderPlan,
+  escapeDrawtext,
+  escapeFilterPath,
+  globalHwArgs,
+  isHardwareEncodeFailure,
+} from '../ffmpeg/hwaccel.js';
 import { pickRandomWindows } from '../ffmpeg/probe.js';
 import { runFfmpeg } from '../ffmpeg/run.js';
 import { synthesizeVoiceOver } from '../voice/tts.js';
@@ -287,78 +293,105 @@ export async function renderPromo(settings: AppSettings, req: PromoRenderRequest
   // Bar spans the focused 50% panel (minus margins).
   await createLowerThirdBar(g.width50 - 48, barH, req.color, barPath);
 
-  const plan = buildEncoderPlan(settings);
-  const args: string[] = [...globalHwArgs(settings)];
-
   // One random window per next-item, duration = that item's play length.
+  const windows: number[] = [];
   for (let i = 0; i < 3; i++) {
     const chapter = chapters[i]!;
     const play = PLAY_SECONDS[i]!;
     const start = pickRandomWindows(chapter.durationSeconds, 1, play)[0] ?? 0;
+    windows.push(start);
     progress(`Item ${i + 1} window @ ${start.toFixed(1)}s (${play.toFixed(1)}s play): ${chapter.title}`);
-    args.push(
-      ...plan.inputArgs,
-      '-ss', start.toFixed(3),
-      '-t', play.toFixed(3),
-      '-i', chapter.filePath,
-    );
   }
-
-  let nextInput = 3;
-  let voiceInput = -1;
-  if (hasVoice) {
-    args.push('-i', voiceMixPath);
-    voiceInput = nextInput;
-    nextInput += 1;
-  }
-
-  args.push('-f', 'lavfi', '-t', String(TOTAL_SECONDS), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
-  const silenceInput = nextInput;
-  nextInput += 1;
-
-  args.push('-loop', '1', '-t', String(TOTAL_SECONDS), '-i', barPath);
-  const barInput = nextInput;
-  nextInput += 1;
-
-  let logoInput: number | undefined;
-  if (req.logoPath && fs.existsSync(req.logoPath)) {
-    args.push('-loop', '1', '-t', String(TOTAL_SECONDS), '-i', req.logoPath);
-    logoInput = nextInput;
-    nextInput += 1;
-  }
-
-  const script = buildFilterScript(settings, req, chapters, {
-    width,
-    height,
-    barPath,
-    barH,
-    hasVoice,
-    voiceInput,
-    silenceInput,
-    barInput,
-    logoInput,
-  });
-
-  // Keep a copy for debugging failed encodes.
-  fs.writeFileSync(path.join(req.workDir, 'filter_complex.txt'), script, 'utf8');
 
   const tempOut = path.join(req.workDir, 'next-items.tmp.mp4');
-  args.push(
-    '-filter_complex', script,
-    '-map', '[vout]',
-    '-map', '[aout]',
-    ...plan.outputVideoArgs,
-    '-c:a', 'aac',
-    '-b:a', `${settings.audioBitrate}k`,
-    '-ac', '2',
-    '-ar', '48000',
-    '-t', String(TOTAL_SECONDS),
-    '-movflags', '+faststart',
-    tempOut,
-  );
 
-  progress('Encoding animated triptych (30s)');
-  const result = await runFfmpeg(args);
+  const encodeWith = async (encodeSettings: AppSettings) => {
+    const plan = buildEncoderPlan(encodeSettings);
+    const args: string[] = [...globalHwArgs(encodeSettings)];
+
+    for (let i = 0; i < 3; i++) {
+      const chapter = chapters[i]!;
+      const play = PLAY_SECONDS[i]!;
+      args.push(
+        ...plan.inputArgs,
+        '-ss', windows[i]!.toFixed(3),
+        '-t', play.toFixed(3),
+        '-i', chapter.filePath,
+      );
+    }
+
+    let nextInput = 3;
+    let voiceInput = -1;
+    if (hasVoice) {
+      args.push('-i', voiceMixPath);
+      voiceInput = nextInput;
+      nextInput += 1;
+    }
+
+    args.push('-f', 'lavfi', '-t', String(TOTAL_SECONDS), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+    const silenceInput = nextInput;
+    nextInput += 1;
+
+    args.push('-loop', '1', '-t', String(TOTAL_SECONDS), '-i', barPath);
+    const barInput = nextInput;
+    nextInput += 1;
+
+    let logoInput: number | undefined;
+    if (req.logoPath && fs.existsSync(req.logoPath)) {
+      args.push('-loop', '1', '-t', String(TOTAL_SECONDS), '-i', req.logoPath);
+      logoInput = nextInput;
+      nextInput += 1;
+    }
+
+    const script = buildFilterScript(encodeSettings, req, chapters, {
+      width,
+      height,
+      barPath,
+      barH,
+      hasVoice,
+      voiceInput,
+      silenceInput,
+      barInput,
+      logoInput,
+    });
+
+    fs.writeFileSync(path.join(req.workDir, 'filter_complex.txt'), script, 'utf8');
+
+    args.push(
+      '-filter_complex', script,
+      '-map', '[vout]',
+      '-map', '[aout]',
+      ...plan.outputVideoArgs,
+      '-c:a', 'aac',
+      '-b:a', `${settings.audioBitrate}k`,
+      '-ac', '2',
+      '-ar', '48000',
+      '-t', String(TOTAL_SECONDS),
+      '-movflags', '+faststart',
+      tempOut,
+    );
+
+    return runFfmpeg(args);
+  };
+
+  progress(`Encoding animated triptych (30s, ${settings.hardwareAcceleration})`);
+  let result = await encodeWith(settings);
+  if (
+    result.code !== 0 &&
+    settings.hardwareAcceleration !== 'None' &&
+    isHardwareEncodeFailure(result.stderr)
+  ) {
+    progress(
+      `Hardware encode failed (${settings.hardwareAcceleration}); retrying with software libx264`,
+      'warn',
+    );
+    fs.writeFileSync(
+      path.join(req.workDir, 'ffmpeg-hw-error.txt'),
+      result.stderr.slice(-8000),
+      'utf8',
+    );
+    result = await encodeWith({ ...settings, hardwareAcceleration: 'None' });
+  }
   if (result.code !== 0) {
     throw new Error(`ffmpeg promo render failed:\n${result.stderr.slice(-5000)}`);
   }
