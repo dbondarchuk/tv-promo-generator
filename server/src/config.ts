@@ -105,6 +105,7 @@ export function loadSettings(): AppSettings {
       envInt('REGEN_LEAD_MINUTES'),
       DEFAULT_SETTINGS.regenLeadMinutes,
     ),
+    timeZone: pick(fromFile.timeZone, env('TIME_ZONE') ?? env('TZ'), DEFAULT_SETTINGS.timeZone),
   };
 
   if (!merged.etvLibraryPath) {

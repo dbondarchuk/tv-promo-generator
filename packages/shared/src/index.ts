@@ -33,6 +33,8 @@ export interface AppSettings {
   videoProfile: string;
   voiceEnabled: boolean;
   regenLeadMinutes: number;
+  /** IANA timezone for on-screen / VO start times (e.g. America/New_York). Empty = process default. */
+  timeZone: string;
 }
 
 export interface ChannelOverride {
@@ -169,6 +171,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   videoProfile: 'high',
   voiceEnabled: true,
   regenLeadMinutes: 3,
+  timeZone: '',
 };
 
 export function parseResolution(resolution: string): { width: number; height: number } {

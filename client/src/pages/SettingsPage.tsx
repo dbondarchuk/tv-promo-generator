@@ -138,6 +138,7 @@ export function SettingsPage() {
         {field('etvLibraryPath', 'ErsatzTV library path (as ETV sees promos)')}
         {field('cachePath', 'Cache path')}
         {field('regenLeadMinutes', 'Regen lead time (minutes)', 'number')}
+        {field('timeZone', 'Display timezone (IANA, e.g. America/New_York)')}
       </div>
 
       <h2>Encoding</h2>

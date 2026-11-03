@@ -30,6 +30,8 @@ services:
       # PIPER_SPEAKER: ${PIPER_SPEAKER:-}
       VOICE_PAUSE_MS: ${VOICE_PAUSE_MS:-450}
       TTS_TIMEOUT_MS: ${TTS_TIMEOUT_MS:-20000}
+      # IANA zone for overlay/VO start times (container is UTC without this)
+      TIME_ZONE: ${TIME_ZONE:-America/New_York}
       # Optional for Intel VAAPI:
       # LIBVA_DRIVER_NAME: iHD
     volumes:

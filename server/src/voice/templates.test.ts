@@ -74,6 +74,11 @@ test('English after cue uses After that', () => {
 test('overlay labels follow channel language', () => {
   assert.match(formatEpisodeSubtitle('uk', 6, 11, 'Benderama'), /Сезон 6, серія 11/);
   assert.match(formatStartsAtLabel('uk', new Date(2026, 0, 1, 14, 5)), /Початок о 14:05/);
+  assert.match(formatStartsAtLabel('en', new Date(2026, 0, 1, 14, 5)), /Starts at 2:05 PM/);
+  assert.match(
+    formatStartsAtLabel('en', new Date('2026-01-01T19:05:00Z'), 'America/New_York'),
+    /Starts at 2:05 PM/,
+  );
   assert.match(formatEpisodeSubtitle('en', 6, 11, 'Benderama'), /Season 6, Episode 11/);
   assert.equal(formatOverlayHeadline('en', 'next', 'American Dad!'), 'Next: American Dad!');
   assert.equal(formatOverlayHeadline('en', 'after', 'Futurama'), 'After that: Futurama');

@@ -462,7 +462,7 @@ export async function buildPromoChaptersForChannel(
       episodeTitle,
       seasonNumber,
       episodeNumber,
-      startLabel: formatStartsAtLabel(language, start),
+      startLabel: formatStartsAtLabel(language, start, settings.timeZone),
     });
   }
   if (chapters.length === 0) {

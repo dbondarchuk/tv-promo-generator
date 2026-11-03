@@ -22,7 +22,8 @@ export interface VoiceTemplate {
   /** On-screen: "After that: {item}" */
   overlayAfter: (itemName: string) => string;
   seasonEpisode: (s: number, e: number, name?: string) => string;
-  startsAt: (hh: string, mm: string) => string;
+  /** `time` is already localized (e.g. "8:05 PM" or "20:05"). */
+  startsAt: (time: string) => string;
 }
 
 export interface BuiltVoiceLine {
@@ -43,7 +44,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Next: ${name}`,
     overlayAfter: (name) => `After that: ${name}`,
     seasonEpisode: (s, e, name) => `Season ${s}, Episode ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Starts at ${hh}:${mm}`,
+    startsAt: (time) => `Starts at ${time}`,
   },
   es: {
     language: 'es',
@@ -53,7 +54,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `A continuación: ${name}`,
     overlayAfter: (name) => `Después: ${name}`,
     seasonEpisode: (s, e, name) => `Temporada ${s}, episodio ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Empieza a las ${hh}:${mm}`,
+    startsAt: (time) => `Empieza a las ${time}`,
   },
   fr: {
     language: 'fr',
@@ -63,7 +64,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `À suivre : ${name}`,
     overlayAfter: (name) => `Ensuite : ${name}`,
     seasonEpisode: (s, e, name) => `Saison ${s}, épisode ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Commence à ${hh}:${mm}`,
+    startsAt: (time) => `Commence à ${time}`,
   },
   de: {
     language: 'de',
@@ -73,7 +74,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Als Nächstes: ${name}`,
     overlayAfter: (name) => `Danach: ${name}`,
     seasonEpisode: (s, e, name) => `Staffel ${s}, Folge ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Beginnt um ${hh}:${mm}`,
+    startsAt: (time) => `Beginnt um ${time}`,
   },
   it: {
     language: 'it',
@@ -83,7 +84,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `A seguire: ${name}`,
     overlayAfter: (name) => `Dopo: ${name}`,
     seasonEpisode: (s, e, name) => `Stagione ${s}, episodio ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Inizia alle ${hh}:${mm}`,
+    startsAt: (time) => `Inizia alle ${time}`,
   },
   pt: {
     language: 'pt',
@@ -93,7 +94,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `A seguir: ${name}`,
     overlayAfter: (name) => `Depois: ${name}`,
     seasonEpisode: (s, e, name) => `Temporada ${s}, episódio ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Começa às ${hh}:${mm}`,
+    startsAt: (time) => `Começa às ${time}`,
   },
   ru: {
     language: 'ru',
@@ -103,7 +104,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Далее: ${name}`,
     overlayAfter: (name) => `После этого: ${name}`,
     seasonEpisode: (s, e, name) => `Сезон ${s}, серия ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Начало в ${hh}:${mm}`,
+    startsAt: (time) => `Начало в ${time}`,
   },
   uk: {
     language: 'uk',
@@ -113,7 +114,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Далі: ${name}`,
     overlayAfter: (name) => `Після цього: ${name}`,
     seasonEpisode: (s, e, name) => `Сезон ${s}, серія ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Початок о ${hh}:${mm}`,
+    startsAt: (time) => `Початок о ${time}`,
   },
   ukr: {
     language: 'uk',
@@ -123,7 +124,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => VOICE_TEMPLATES.uk!.overlayNext(name),
     overlayAfter: (name) => VOICE_TEMPLATES.uk!.overlayAfter(name),
     seasonEpisode: (s, e, name) => VOICE_TEMPLATES.uk!.seasonEpisode(s, e, name),
-    startsAt: (hh, mm) => VOICE_TEMPLATES.uk!.startsAt(hh, mm),
+    startsAt: (time) => VOICE_TEMPLATES.uk!.startsAt(time),
   },
   pl: {
     language: 'pl',
@@ -133,7 +134,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Następnie: ${name}`,
     overlayAfter: (name) => `Potem: ${name}`,
     seasonEpisode: (s, e, name) => `Sezon ${s}, odcinek ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Start o ${hh}:${mm}`,
+    startsAt: (time) => `Start o ${time}`,
   },
   nl: {
     language: 'nl',
@@ -143,7 +144,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `Hierna: ${name}`,
     overlayAfter: (name) => `Daarna: ${name}`,
     seasonEpisode: (s, e, name) => `Seizoen ${s}, aflevering ${e}${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `Begint om ${hh}:${mm}`,
+    startsAt: (time) => `Begint om ${time}`,
   },
   ja: {
     language: 'ja',
@@ -153,7 +154,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `次: ${name}`,
     overlayAfter: (name) => `そのあと: ${name}`,
     seasonEpisode: (s, e, name) => `シーズン${s}、第${e}話${name ? `、${name}` : ''}。`,
-    startsAt: (hh, mm) => `${hh}:${mm} 開始`,
+    startsAt: (time) => `${time} 開始`,
   },
   zh: {
     language: 'zh',
@@ -163,7 +164,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `接下来: ${name}`,
     overlayAfter: (name) => `之后: ${name}`,
     seasonEpisode: (s, e, name) => `第${s}季第${e}集${name ? `，${name}` : ''}。`,
-    startsAt: (hh, mm) => `${hh}:${mm} 开始`,
+    startsAt: (time) => `${time} 开始`,
   },
   ko: {
     language: 'ko',
@@ -173,7 +174,7 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     overlayNext: (name) => `다음: ${name}`,
     overlayAfter: (name) => `그 다음: ${name}`,
     seasonEpisode: (s, e, name) => `시즌 ${s}, ${e}화${name ? `, ${name}` : ''}.`,
-    startsAt: (hh, mm) => `${hh}:${mm} 시작`,
+    startsAt: (time) => `${time} 시작`,
   },
 };
 
@@ -248,9 +249,62 @@ export function formatOverlayHeadline(
     : template.overlayNext(itemName);
 }
 
-export function formatStartsAtLabel(language: string, date: Date): string {
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
+function localeForLanguage(language: string): string {
+  switch (normalizeLanguage(language)) {
+    case 'es':
+      return 'es-ES';
+    case 'fr':
+      return 'fr-FR';
+    case 'de':
+      return 'de-DE';
+    case 'it':
+      return 'it-IT';
+    case 'pt':
+      return 'pt-BR';
+    case 'ru':
+      return 'ru-RU';
+    case 'uk':
+      return 'uk-UA';
+    case 'pl':
+      return 'pl-PL';
+    case 'nl':
+      return 'nl-NL';
+    case 'ja':
+      return 'ja-JP';
+    case 'zh':
+      return 'zh-CN';
+    case 'ko':
+      return 'ko-KR';
+    case 'en':
+    default:
+      return 'en-US';
+  }
+}
 
-  return getTemplate(language).startsAt(hh, mm);
+/** English (and similar) get 12h + AM/PM; most others stay 24h. */
+function preferHour12(language: string): boolean {
+  return normalizeLanguage(language) === 'en';
+}
+
+/** Wall-clock time in the configured IANA timezone (empty = runtime default). */
+export function formatWallClock(date: Date, language: string, timeZone?: string): string {
+  const options: Intl.DateTimeFormatOptions = {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: preferHour12(language),
+  };
+  const zone = timeZone?.trim();
+  if (zone) options.timeZone = zone;
+
+  try {
+    return new Intl.DateTimeFormat(localeForLanguage(language), options).format(date);
+  } catch {
+    // Invalid IANA zone — fall back to runtime default.
+    delete options.timeZone;
+    return new Intl.DateTimeFormat(localeForLanguage(language), options).format(date);
+  }
+}
+
+export function formatStartsAtLabel(language: string, date: Date, timeZone?: string): string {
+  return getTemplate(language).startsAt(formatWallClock(date, language, timeZone));
 }
