@@ -16,9 +16,9 @@ Each promo is written as `{output}/{channel}/next-items.mp4`.
 
 > Dashboard preview
 
-<video src="./assets/readme/next-items.mp4" controls></video>
+https://github.com/user-attachments/assets/b4490290-5439-4899-9a0a-52f66f6b4f15
 
-> Example of generated file
+> Example of generated file [next-items.mp4](./assets/readme/next-items.mp4)
 
 ---
 
