@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   AppSettings,
   JobInfo,
@@ -7,17 +5,23 @@ import {
   JobLogEntry,
   JobLogLevel,
   PushOptions,
-} from '@promo/shared';
-import { promoOutputFile } from '../util/paths.js';
-import { createLogger } from '../util/log.js';
-import { renderPromo } from '../promo/render.js';
-import { buildPromoChaptersForChannel, getFontFile, invalidateChannelCaches } from './channels.js';
-import { rollbackErsatzTvDatabase } from './etv-backup.js';
-import { pushToErsatzTv } from './push.js';
+} from "@promo/shared";
+import fs from "node:fs";
+import path from "node:path";
+import { renderPromo } from "../promo/render.js";
+import { createLogger } from "../util/log.js";
+import { promoOutputFile } from "../util/paths.js";
+import {
+  buildPromoChaptersForChannel,
+  getFontFile,
+  invalidateChannelCaches,
+} from "./channels.js";
+import { rollbackErsatzTvDatabase } from "./etv-backup.js";
+import { pushToErsatzTv } from "./push.js";
 
-const log = createLogger('jobs');
+const log = createLogger("jobs");
 const MAX_LOGS_PER_JOB = 400;
-const BLOCKING_KINDS: JobKind[] = ['push', 'rollback'];
+const BLOCKING_KINDS: JobKind[] = ["push", "rollback"];
 
 type Listener = (jobs: JobInfo[]) => void;
 
@@ -63,7 +67,9 @@ export class JobQueue {
   /** Push/rollback pause generate until they finish. */
   hasBlockingJob(): boolean {
     return [...this.jobs.values()].some(
-      (j) => BLOCKING_KINDS.includes(j.kind) && (j.status === 'queued' || j.status === 'running'),
+      (j) =>
+        BLOCKING_KINDS.includes(j.kind) &&
+        (j.status === "queued" || j.status === "running"),
     );
   }
 
@@ -80,12 +86,18 @@ export class JobQueue {
   }): JobInfo {
     const existingQueued = [...this.jobs.values()].find(
       (j) =>
-        j.kind === 'generate' &&
+        j.kind === "generate" &&
         j.channelNumber === opts.channelNumber &&
-        (j.status === 'queued' || j.status === 'running'),
+        (j.status === "queued" || j.status === "running"),
     );
+
     if (existingQueued) {
-      this.appendLog(existingQueued.id, 'info', 'Generate requested again while job still queued/running');
+      this.appendLog(
+        existingQueued.id,
+        "info",
+        "Generate requested again while job still queued/running",
+      );
+
       return this.publicJob(existingQueued);
     }
 
@@ -93,33 +105,46 @@ export class JobQueue {
     const late = Boolean(opts.deadline && opts.deadline.getTime() < Date.now());
     const job: InternalJob = {
       id,
-      kind: 'generate',
+      kind: "generate",
       channelNumber: opts.channelNumber,
       channelName: opts.channelName,
-      status: late ? 'late' : 'queued',
+      status: late ? "late" : "queued",
       queuedAt: new Date().toISOString(),
       deadline: opts.deadline?.toISOString(),
       late,
       logs: [],
-      priority: opts.preferFront || late ? 10 : (opts.deadline?.getTime() ?? Date.now() + 86_400_000),
+      priority:
+        opts.preferFront || late
+          ? 10
+          : (opts.deadline?.getTime() ?? Date.now() + 86_400_000),
     };
+
     this.jobs.set(id, job);
     this.queue.push(id);
-    this.queue.sort((a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority);
+    this.queue.sort(
+      (a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority,
+    );
 
     const paused = this.hasBlockingJob();
     this.appendLog(
       id,
-      late ? 'warn' : 'info',
+      late ? "warn" : "info",
       late
         ? `Queued late (deadline ${job.deadline}) · queue #${this.queue.length}`
-        : `Queued · position ${this.queue.length}${job.deadline ? ` · deadline ${job.deadline}` : ''}`,
+        : `Queued · position ${this.queue.length}${job.deadline ? ` · deadline ${job.deadline}` : ""}`,
       false,
     );
+
     if (paused) {
-      this.appendLog(id, 'warn', 'Paused — waiting for Push/Rollback to finish', false);
+      this.appendLog(
+        id,
+        "warn",
+        "Paused — waiting for Push/Rollback to finish",
+        false,
+      );
     }
-    log.info('generate job queued', {
+
+    log.info("generate job queued", {
       id,
       channel: opts.channelName,
       number: opts.channelNumber,
@@ -127,6 +152,7 @@ export class JobQueue {
       paused,
       queueDepth: this.queue.length,
     });
+
     this.emit();
     void this.pump();
     return this.publicJob(job);
@@ -134,26 +160,26 @@ export class JobQueue {
 
   enqueuePush(pushOptions: PushOptions): JobInfo {
     return this.enqueueBlocking({
-      kind: 'push',
-      channelNumber: 'push',
-      channelName: 'Push to ErsatzTV',
+      kind: "push",
+      channelNumber: "push",
+      channelName: "Push to ErsatzTV",
       pushOptions,
-      pauseMessage: 'Paused — waiting for Push to ErsatzTV to finish',
+      pauseMessage: "Paused — waiting for Push to ErsatzTV to finish",
     });
   }
 
   enqueueRollback(backupId?: string): JobInfo {
     return this.enqueueBlocking({
-      kind: 'rollback',
-      channelNumber: 'rollback',
-      channelName: 'Rollback ErsatzTV DB',
+      kind: "rollback",
+      channelNumber: "rollback",
+      channelName: "Rollback ErsatzTV DB",
       backupId,
-      pauseMessage: 'Paused — waiting for DB rollback to finish',
+      pauseMessage: "Paused — waiting for DB rollback to finish",
     });
   }
 
   private enqueueBlocking(opts: {
-    kind: 'push' | 'rollback';
+    kind: "push" | "rollback";
     channelNumber: string;
     channelName: string;
     backupId?: string;
@@ -161,10 +187,18 @@ export class JobQueue {
     pauseMessage: string;
   }): JobInfo {
     const existing = [...this.jobs.values()].find(
-      (j) => j.kind === opts.kind && (j.status === 'queued' || j.status === 'running'),
+      (j) =>
+        j.kind === opts.kind &&
+        (j.status === "queued" || j.status === "running"),
     );
+
     if (existing) {
-      this.appendLog(existing.id, 'info', `${opts.kind} requested again while still queued/running`);
+      this.appendLog(
+        existing.id,
+        "info",
+        `${opts.kind} requested again while still queued/running`,
+      );
+
       return this.publicJob(existing);
     }
 
@@ -174,45 +208,67 @@ export class JobQueue {
       kind: opts.kind,
       channelNumber: opts.channelNumber,
       channelName: opts.channelName,
-      status: 'queued',
+      status: "queued",
       queuedAt: new Date().toISOString(),
       backupId: opts.backupId,
       pushOptions: opts.pushOptions,
       logs: [],
       priority: 0,
     };
+
     this.jobs.set(id, job);
     this.queue.push(id);
-    this.queue.sort((a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority);
+    this.queue.sort(
+      (a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority,
+    );
 
     const pushBits: string[] = [];
     if (opts.pushOptions) {
       pushBits.push(
         opts.pushOptions.fillerTypes.length
-          ? `fillers: ${opts.pushOptions.fillerTypes.join(', ')}`
-          : 'fillers: none',
+          ? `fillers: ${opts.pushOptions.fillerTypes.join(", ")}`
+          : "fillers: none",
       );
-      if (opts.pushOptions.cleanupLegacy) pushBits.push('cleanup legacy');
-      if (opts.pushOptions.cleanupUnselected) pushBits.push('cleanup unselected');
-    }
-    this.appendLog(
-      id,
-      'info',
-      `Queued · generation jobs will pause until this finishes` +
-        (opts.backupId ? ` · backup ${opts.backupId}` : '') +
-        (pushBits.length ? ` · ${pushBits.join(' · ')}` : ''),
-      false,
-    );
-    for (const other of this.jobs.values()) {
-      if (other.kind === 'generate' && other.status === 'queued') {
-        this.appendLog(other.id, 'warn', opts.pauseMessage, false);
-      }
-    }
-    if ([...this.jobs.values()].some((j) => j.kind === 'generate' && j.status === 'running')) {
-      this.appendLog(id, 'info', 'Waiting for in-flight generate job to finish first', false);
+
+      if (opts.pushOptions.cleanupLegacy) pushBits.push("cleanup legacy");
+      if (opts.pushOptions.cleanupUnselected)
+        pushBits.push("cleanup unselected");
     }
 
-    log.info(`${opts.kind} job queued`, { id, backupId: opts.backupId, queueDepth: this.queue.length });
+    this.appendLog(
+      id,
+      "info",
+      `Queued · generation jobs will pause until this finishes` +
+        (opts.backupId ? ` · backup ${opts.backupId}` : "") +
+        (pushBits.length ? ` · ${pushBits.join(" · ")}` : ""),
+      false,
+    );
+
+    for (const other of this.jobs.values()) {
+      if (other.kind === "generate" && other.status === "queued") {
+        this.appendLog(other.id, "warn", opts.pauseMessage, false);
+      }
+    }
+
+    if (
+      [...this.jobs.values()].some(
+        (j) => j.kind === "generate" && j.status === "running",
+      )
+    ) {
+      this.appendLog(
+        id,
+        "info",
+        "Waiting for in-flight generate job to finish first",
+        false,
+      );
+    }
+
+    log.info(`${opts.kind} job queued`, {
+      id,
+      backupId: opts.backupId,
+      queueDepth: this.queue.length,
+    });
+
     this.emit();
     void this.pump();
     return this.publicJob(job);
@@ -223,26 +279,38 @@ export class JobQueue {
     return rest;
   }
 
-  private appendLog(jobId: string, level: JobLogLevel, message: string, emit = true): void {
+  private appendLog(
+    jobId: string,
+    level: JobLogLevel,
+    message: string,
+    emit = true,
+  ): void {
     const job = this.jobs.get(jobId);
     if (!job) return;
+
     const entry: JobLogEntry = {
       at: new Date().toISOString(),
       level,
       message,
     };
+
     job.logs.push(entry);
     if (job.logs.length > MAX_LOGS_PER_JOB) {
       job.logs.splice(0, job.logs.length - MAX_LOGS_PER_JOB);
     }
-    if (level === 'error') log.error(message, { jobId, channel: job.channelName, kind: job.kind });
-    else if (level === 'warn') log.warn(message, { jobId, channel: job.channelName, kind: job.kind });
+
+    if (level === "error")
+      log.error(message, { jobId, channel: job.channelName, kind: job.kind });
+    else if (level === "warn")
+      log.warn(message, { jobId, channel: job.channelName, kind: job.kind });
     else log.info(message, { jobId, channel: job.channelName, kind: job.kind });
+
     if (emit) this.emit();
   }
 
   private emit(): void {
     if (this.emitTimer) return;
+
     this.emitTimer = setTimeout(() => {
       this.emitTimer = null;
       const snapshot = this.list();
@@ -260,49 +328,62 @@ export class JobQueue {
         i -= 1;
         continue;
       }
-      if (job.kind === 'generate' && blocking) {
+
+      if (job.kind === "generate" && blocking) {
         continue;
       }
+
       this.queue.splice(i, 1);
       return id;
     }
+
     return undefined;
   }
 
   private async pump(): Promise<void> {
     if (this.running) return;
+
     const nextId = this.pickNextJobId();
     if (!nextId) return;
+
     const job = this.jobs.get(nextId);
     if (!job) {
       void this.pump();
       return;
     }
+
     this.running = true;
-    job.status = 'running';
+    job.status = "running";
     job.startedAt = new Date().toISOString();
     if (job.deadline && new Date(job.deadline).getTime() < Date.now()) {
       job.late = true;
     }
-    this.appendLog(job.id, 'info', `Started${job.late ? ' (late)' : ''} · ${job.kind}`);
+
+    this.appendLog(
+      job.id,
+      "info",
+      `Started${job.late ? " (late)" : ""} · ${job.kind}`,
+    );
+
     this.emit();
 
     try {
-      if (job.kind === 'push') {
+      if (job.kind === "push") {
         await this.runPushJob(job);
-      } else if (job.kind === 'rollback') {
+      } else if (job.kind === "rollback") {
         await this.runRollbackJob(job);
       } else {
         await this.runGenerateJob(job);
       }
     } catch (err) {
-      job.status = 'failed';
+      job.status = "failed";
       job.finishedAt = new Date().toISOString();
       job.error = err instanceof Error ? err.message : String(err);
-      if (job.kind === 'generate') {
+      if (job.kind === "generate") {
         this.lastErrors.set(job.channelNumber, job.error);
       }
-      this.appendLog(job.id, 'error', `Failed: ${job.error}`, false);
+
+      this.appendLog(job.id, "error", `Failed: ${job.error}`, false);
     }
 
     this.running = false;
@@ -312,15 +393,30 @@ export class JobQueue {
 
   private async runGenerateJob(job: InternalJob): Promise<void> {
     const settings = this.settingsProvider();
-    const onProgress = (message: string, level: JobLogLevel = 'info') => {
+    const onProgress = (message: string, level: JobLogLevel = "info") => {
       this.appendLog(job.id, level, message);
     };
 
-    const built = await buildPromoChaptersForChannel(settings, job.channelNumber, onProgress);
+    const built = await buildPromoChaptersForChannel(
+      settings,
+      job.channelNumber,
+      onProgress,
+    );
+
     const outputFile = promoOutputFile(settings.outputPath, built.channelName);
-    const workDir = path.join(settings.cachePath, 'work', job.channelNumber, String(Date.now()));
+    const workDir = path.join(
+      settings.cachePath,
+      "work",
+      job.channelNumber,
+      String(Date.now()),
+    );
+
     fs.mkdirSync(workDir, { recursive: true });
-    this.appendLog(job.id, 'info', `Rendering promo (${built.language}, ${built.chapters.length} sources)`);
+    this.appendLog(
+      job.id,
+      "info",
+      `Rendering promo (${built.language}, ${built.chapters.length} sources)`,
+    );
 
     const result = await renderPromo(settings, {
       channelName: built.channelName,
@@ -336,22 +432,30 @@ export class JobQueue {
       cachePath: settings.cachePath,
       onProgress,
     });
-    job.status = 'succeeded';
+
+    job.status = "succeeded";
     job.finishedAt = new Date().toISOString();
     this.lastGenerated.set(job.channelNumber, job.finishedAt);
     this.lastErrors.delete(job.channelNumber);
     if (result.voiceError) {
       this.lastErrors.set(job.channelNumber, `Voice: ${result.voiceError}`);
-      this.appendLog(job.id, 'warn', `Voice: ${result.voiceError}`, false);
+      this.appendLog(job.id, "warn", `Voice: ${result.voiceError}`, false);
     }
+
     const ms = Date.now() - new Date(job.startedAt!).getTime();
-    this.appendLog(job.id, 'info', `Succeeded in ${Math.round(ms / 1000)}s → ${outputFile}`, false);
+    this.appendLog(
+      job.id,
+      "info",
+      `Succeeded in ${Math.round(ms / 1000)}s → ${outputFile}`,
+      false,
+    );
+
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 
   private async runPushJob(job: InternalJob): Promise<void> {
     const settings = this.settingsProvider();
-    const onProgress = (message: string, level: JobLogLevel = 'info') => {
+    const onProgress = (message: string, level: JobLogLevel = "info") => {
       this.appendLog(job.id, level, message);
     };
 
@@ -360,6 +464,7 @@ export class JobQueue {
       cleanupLegacy: false,
       cleanupUnselected: false,
     };
+
     const result = await pushToErsatzTv(settings, pushOptions, onProgress);
     const failed = result.results.filter((r) => !r.ok);
     const ok = result.results.length - failed.length;
@@ -368,25 +473,33 @@ export class JobQueue {
     if (result.backup) {
       this.appendLog(
         job.id,
-        'info',
+        "info",
         `Backup id ${result.backup.id} (${result.backup.bytes} bytes)`,
         false,
       );
     }
 
     if (failed.length === 0) {
-      job.status = 'succeeded';
-      this.appendLog(job.id, 'info', `Succeeded · ${ok} channel(s)`, false);
+      job.status = "succeeded";
+      this.appendLog(job.id, "info", `Succeeded · ${ok} channel(s)`, false);
     } else if (ok === 0) {
-      job.status = 'failed';
-      job.error = failed.map((r) => `${r.channelName}: ${r.message}`).join('; ');
-      this.appendLog(job.id, 'error', `Failed · 0/${result.results.length} channel(s)`, false);
+      job.status = "failed";
+      job.error = failed
+        .map((r) => `${r.channelName}: ${r.message}`)
+        .join("; ");
+
+      this.appendLog(
+        job.id,
+        "error",
+        `Failed · 0/${result.results.length} channel(s)`,
+        false,
+      );
     } else {
-      job.status = 'failed';
+      job.status = "failed";
       job.error = `${failed.length} channel(s) failed`;
       this.appendLog(
         job.id,
-        'warn',
+        "warn",
         `Finished with errors · ${ok} ok, ${failed.length} failed`,
         false,
       );
@@ -397,13 +510,16 @@ export class JobQueue {
     const settings = this.settingsProvider();
     this.appendLog(
       job.id,
-      'info',
-      job.backupId ? `Restoring backup ${job.backupId}` : 'Restoring latest pre-push backup',
+      "info",
+      job.backupId
+        ? `Restoring backup ${job.backupId}`
+        : "Restoring latest pre-push backup",
     );
+
     const result = await rollbackErsatzTvDatabase(settings, job.backupId);
     invalidateChannelCaches();
-    job.status = 'succeeded';
+    job.status = "succeeded";
     job.finishedAt = new Date().toISOString();
-    this.appendLog(job.id, 'info', result.message, false);
+    this.appendLog(job.id, "info", result.message, false);
   }
 }

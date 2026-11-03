@@ -1,17 +1,20 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { rewritePath } from './paths.js';
+import assert from "node:assert/strict";
+import test from "node:test";
+import { rewritePath } from "./paths.js";
 
-test('rewritePath swaps prefix', () => {
+test("rewritePath swaps prefix", () => {
   assert.equal(
-    rewritePath('/mnt/media/Shows/foo.mkv', '/mnt/media', '/library').replace(/\\/g, '/'),
-    '/library/Shows/foo.mkv',
+    rewritePath("/mnt/media/Shows/foo.mkv", "/mnt/media", "/library").replace(
+      /\\/g,
+      "/",
+    ),
+    "/library/Shows/foo.mkv",
   );
 });
 
-test('rewritePath leaves unmatched paths', () => {
+test("rewritePath leaves unmatched paths", () => {
   assert.equal(
-    rewritePath('/other/foo.mkv', '/mnt/media', '/library').replace(/\\/g, '/'),
-    '/other/foo.mkv',
+    rewritePath("/other/foo.mkv", "/mnt/media", "/library").replace(/\\/g, "/"),
+    "/other/foo.mkv",
   );
 });

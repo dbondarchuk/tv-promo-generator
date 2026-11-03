@@ -1,4 +1,4 @@
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVEL_RANK: Record<LogLevel, number> = {
   debug: 10,
@@ -8,9 +8,11 @@ const LEVEL_RANK: Record<LogLevel, number> = {
 };
 
 function currentLevel(): LogLevel {
-  const raw = (process.env.LOG_LEVEL ?? 'info').toLowerCase();
-  if (raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error') return raw;
-  return 'info';
+  const raw = (process.env.LOG_LEVEL ?? "info").toLowerCase();
+  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error")
+    return raw;
+
+  return "info";
 }
 
 function shouldLog(level: LogLevel): boolean {
@@ -18,8 +20,9 @@ function shouldLog(level: LogLevel): boolean {
 }
 
 function formatExtra(extra?: unknown): string {
-  if (extra === undefined) return '';
-  if (typeof extra === 'string') return ` ${extra}`;
+  if (extra === undefined) return "";
+  if (typeof extra === "string") return ` ${extra}`;
+
   try {
     return ` ${JSON.stringify(extra)}`;
   } catch {
@@ -27,13 +30,19 @@ function formatExtra(extra?: unknown): string {
   }
 }
 
-function write(level: LogLevel, scope: string, message: string, extra?: unknown): void {
+function write(
+  level: LogLevel,
+  scope: string,
+  message: string,
+  extra?: unknown,
+): void {
   if (!shouldLog(level)) return;
+
   const ts = new Date().toISOString();
   const line = `${ts} [${level.toUpperCase()}] [${scope}] ${message}${formatExtra(extra)}`;
-  if (level === 'error') {
+  if (level === "error") {
     console.error(line);
-  } else if (level === 'warn') {
+  } else if (level === "warn") {
     console.warn(line);
   } else {
     console.log(line);
@@ -42,9 +51,13 @@ function write(level: LogLevel, scope: string, message: string, extra?: unknown)
 
 export function createLogger(scope: string) {
   return {
-    debug: (message: string, extra?: unknown) => write('debug', scope, message, extra),
-    info: (message: string, extra?: unknown) => write('info', scope, message, extra),
-    warn: (message: string, extra?: unknown) => write('warn', scope, message, extra),
-    error: (message: string, extra?: unknown) => write('error', scope, message, extra),
+    debug: (message: string, extra?: unknown) =>
+      write("debug", scope, message, extra),
+    info: (message: string, extra?: unknown) =>
+      write("info", scope, message, extra),
+    warn: (message: string, extra?: unknown) =>
+      write("warn", scope, message, extra),
+    error: (message: string, extra?: unknown) =>
+      write("error", scope, message, extra),
   };
 }

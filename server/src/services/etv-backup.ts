@@ -1,16 +1,16 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import Database from 'better-sqlite3';
-import { AppSettings, EtvBackupInfo, RollbackResult } from '@promo/shared';
-import { openDb } from '../ersatztv/db.js';
-import { createLogger } from '../util/log.js';
+import { AppSettings, EtvBackupInfo, RollbackResult } from "@promo/shared";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+import { openDb } from "../ersatztv/db.js";
+import { createLogger } from "../util/log.js";
 
-const log = createLogger('etv-backup');
+const log = createLogger("etv-backup");
 const MAX_BACKUPS = 15;
-const META_NAME = 'latest-push.json';
+const META_NAME = "latest-push.json";
 
 function backupsRoot(settings: AppSettings): string {
-  return path.join(path.resolve(settings.configPath), 'backups');
+  return path.join(path.resolve(settings.configPath), "backups");
 }
 
 function ensureBackupsDir(settings: AppSettings): string {
@@ -34,21 +34,22 @@ function sidecars(dbPath: string): string[] {
 function readInfo(filePath: string): EtvBackupInfo | null {
   const infoPath = `${filePath}.json`;
   if (!fs.existsSync(infoPath)) return null;
+
   try {
-    return JSON.parse(fs.readFileSync(infoPath, 'utf8')) as EtvBackupInfo;
+    return JSON.parse(fs.readFileSync(infoPath, "utf8")) as EtvBackupInfo;
   } catch {
     return null;
   }
 }
 
 function writeInfo(info: EtvBackupInfo): void {
-  fs.writeFileSync(`${info.path}.json`, JSON.stringify(info, null, 2), 'utf8');
+  fs.writeFileSync(`${info.path}.json`, JSON.stringify(info, null, 2), "utf8");
 }
 
 function pruneOldBackups(dir: string): void {
   const files = fs
     .readdirSync(dir)
-    .filter((f) => f.startsWith('ersatztv-') && f.endsWith('.sqlite3'))
+    .filter((f) => f.startsWith("ersatztv-") && f.endsWith(".sqlite3"))
     .map((f) => {
       const full = path.join(dir, f);
       return { full, mtime: fs.statSync(full).mtimeMs };
@@ -61,7 +62,7 @@ function pruneOldBackups(dir: string): void {
       const info = `${stale.full}.json`;
       if (fs.existsSync(info)) fs.unlinkSync(info);
     } catch (err) {
-      log.warn('failed to prune backup', {
+      log.warn("failed to prune backup", {
         file: stale.full,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -72,11 +73,11 @@ function pruneOldBackups(dir: string): void {
 /** Online SQLite backup of ersatztv.sqlite3 into config/backups. */
 export async function backupErsatzTvDatabase(
   settings: AppSettings,
-  reason: EtvBackupInfo['reason'] = 'manual',
+  reason: EtvBackupInfo["reason"] = "manual",
 ): Promise<EtvBackupInfo> {
   const sourcePath = path.resolve(settings.etvDatabase);
   if (!settings.etvDatabase?.trim()) {
-    throw new Error('ErsatzTV database path is not configured');
+    throw new Error("ErsatzTV database path is not configured");
   }
   if (!fs.existsSync(sourcePath)) {
     throw new Error(`ErsatzTV database not found: ${sourcePath}`);
@@ -84,10 +85,10 @@ export async function backupErsatzTvDatabase(
 
   const dir = ensureBackupsDir(settings);
   const createdAt = new Date().toISOString();
-  const id = createdAt.replace(/[:.]/g, '-');
+  const id = createdAt.replace(/[:.]/g, "-");
   const destPath = backupFilePath(dir, id);
 
-  log.info('backing up ErsatzTV database', { sourcePath, destPath, reason });
+  log.info("backing up ErsatzTV database", { sourcePath, destPath, reason });
 
   const source = openDb(sourcePath, true);
   try {
@@ -105,14 +106,15 @@ export async function backupErsatzTvDatabase(
     bytes,
     reason,
   };
+
   writeInfo(info);
 
-  if (reason === 'pre-push') {
-    fs.writeFileSync(metaPath(settings), JSON.stringify(info, null, 2), 'utf8');
+  if (reason === "pre-push") {
+    fs.writeFileSync(metaPath(settings), JSON.stringify(info, null, 2), "utf8");
   }
 
   pruneOldBackups(dir);
-  log.info('backup complete', { id, bytes });
+  log.info("backup complete", { id, bytes });
   return info;
 }
 
@@ -122,12 +124,13 @@ export function listErsatzTvBackups(settings: AppSettings): EtvBackupInfo[] {
 
   return fs
     .readdirSync(dir)
-    .filter((f) => f.startsWith('ersatztv-') && f.endsWith('.sqlite3'))
+    .filter((f) => f.startsWith("ersatztv-") && f.endsWith(".sqlite3"))
     .map((f) => {
       const full = path.join(dir, f);
       const fromMeta = readInfo(full);
       if (fromMeta) return fromMeta;
-      const id = f.replace(/^ersatztv-/, '').replace(/\.sqlite3$/, '');
+
+      const id = f.replace(/^ersatztv-/, "").replace(/\.sqlite3$/, "");
       const st = fs.statSync(full);
       return {
         id,
@@ -135,33 +138,46 @@ export function listErsatzTvBackups(settings: AppSettings): EtvBackupInfo[] {
         sourcePath: settings.etvDatabase,
         path: full,
         bytes: st.size,
-        reason: 'manual' as const,
+        reason: "manual" as const,
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function getLatestPushBackup(settings: AppSettings): EtvBackupInfo | null {
+export function getLatestPushBackup(
+  settings: AppSettings,
+): EtvBackupInfo | null {
   const meta = metaPath(settings);
   if (fs.existsSync(meta)) {
     try {
-      const info = JSON.parse(fs.readFileSync(meta, 'utf8')) as EtvBackupInfo;
+      const info = JSON.parse(fs.readFileSync(meta, "utf8")) as EtvBackupInfo;
       if (info.path && fs.existsSync(info.path)) return info;
     } catch {
       // fall through to listing
     }
   }
-  return listErsatzTvBackups(settings).find((b) => b.reason === 'pre-push') ?? null;
+
+  return (
+    listErsatzTvBackups(settings).find((b) => b.reason === "pre-push") ?? null
+  );
 }
 
-function resolveBackup(settings: AppSettings, backupId?: string): EtvBackupInfo {
+function resolveBackup(
+  settings: AppSettings,
+  backupId?: string,
+): EtvBackupInfo {
   if (backupId) {
     const match = listErsatzTvBackups(settings).find((b) => b.id === backupId);
     if (!match) throw new Error(`Backup not found: ${backupId}`);
+
     return match;
   }
-  const latest = getLatestPushBackup(settings) ?? listErsatzTvBackups(settings)[0];
-  if (!latest) throw new Error('No ErsatzTV backups found');
+
+  const latest =
+    getLatestPushBackup(settings) ?? listErsatzTvBackups(settings)[0];
+
+  if (!latest) throw new Error("No ErsatzTV backups found");
+
   return latest;
 }
 
@@ -177,20 +193,20 @@ export async function rollbackErsatzTvDatabase(
   const destPath = path.resolve(settings.etvDatabase);
 
   if (!settings.etvDatabase?.trim()) {
-    throw new Error('ErsatzTV database path is not configured');
+    throw new Error("ErsatzTV database path is not configured");
   }
   if (!fs.existsSync(backup.path)) {
     throw new Error(`Backup file missing: ${backup.path}`);
   }
 
-  log.info('rolling back ErsatzTV database', {
+  log.info("rolling back ErsatzTV database", {
     backupId: backup.id,
     from: backup.path,
     to: destPath,
   });
 
   const safetyDir = ensureBackupsDir(settings);
-  const safetyId = `pre-rollback-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const safetyId = `pre-rollback-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const safetyPath = backupFilePath(safetyDir, safetyId);
 
   if (fs.existsSync(destPath)) {
@@ -201,16 +217,17 @@ export async function rollbackErsatzTvDatabase(
       } finally {
         live.close();
       }
+
       writeInfo({
         id: safetyId,
         createdAt: new Date().toISOString(),
         sourcePath: destPath,
         path: safetyPath,
         bytes: fs.statSync(safetyPath).size,
-        reason: 'manual',
+        reason: "manual",
       });
     } catch (err) {
-      log.warn('could not snapshot live DB before rollback', {
+      log.warn("could not snapshot live DB before rollback", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -219,9 +236,14 @@ export async function rollbackErsatzTvDatabase(
   const tmpPath = `${destPath}.promo-restore-tmp`;
   if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
 
-  const source = new Database(backup.path, { readonly: true, fileMustExist: true, timeout: 10_000 });
+  const source = new Database(backup.path, {
+    readonly: true,
+    fileMustExist: true,
+    timeout: 10_000,
+  });
+
   try {
-    source.pragma('busy_timeout = 10000');
+    source.pragma("busy_timeout = 10000");
     await source.backup(tmpPath);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -234,6 +256,7 @@ export async function rollbackErsatzTvDatabase(
     for (const side of sidecars(destPath)) {
       if (fs.existsSync(side)) fs.unlinkSync(side);
     }
+
     fs.copyFileSync(tmpPath, destPath);
     fs.unlinkSync(tmpPath);
   } catch (err) {
@@ -242,6 +265,7 @@ export async function rollbackErsatzTvDatabase(
     } catch {
       /* ignore */
     }
+
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(
       `Rollback failed (is ErsatzTV locking the DB?): ${message}. ` +
@@ -252,6 +276,7 @@ export async function rollbackErsatzTvDatabase(
   const message =
     `Restored ${path.basename(destPath)} from backup ${backup.id}. ` +
     `Restart or reset playouts in ErsatzTV if channels look stale.`;
-  log.info('rollback complete', { backupId: backup.id });
+
+  log.info("rollback complete", { backupId: backup.id });
   return { ok: true, backup, message };
 }

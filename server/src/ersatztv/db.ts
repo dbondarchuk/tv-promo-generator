@@ -1,11 +1,11 @@
-import Database from 'better-sqlite3';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   FILLER_PLACEMENT_LABELS,
   FILLER_PLACEMENTS,
   FillerPlacement,
-} from '@promo/shared';
+} from "@promo/shared";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 
 export interface DbSchema {
   tables: Set<string>;
@@ -34,7 +34,7 @@ export interface MediaFileRow {
 }
 
 export interface MediaItemMetadata {
-  kind: 'episode' | 'movie' | 'other';
+  kind: "episode" | "movie" | "other";
   /** Show name or movie title */
   title: string;
   episodeTitle?: string;
@@ -44,7 +44,9 @@ export interface MediaItemMetadata {
 
 /** Strip trailing "(2014)" / "(1999)" style years from titles. */
 export function stripTitleYear(title: string): string {
-  return title.replace(/\s*[\(\[\{]\s*(?:19|20)\d{2}\s*[\)\]\}]\s*$/u, '').trim();
+  return title
+    .replace(/\s*[\(\[\{]\s*(?:19|20)\d{2}\s*[\)\]\}]\s*$/u, "")
+    .trim();
 }
 
 let schemaCache: DbSchema | null = null;
@@ -55,21 +57,28 @@ export function openDb(
   opts: { busyTimeoutMs?: number } = {},
 ): Database.Database {
   if (!dbPath) {
-    throw new Error('ErsatzTV database path is not configured');
+    throw new Error("ErsatzTV database path is not configured");
   }
   if (!fs.existsSync(dbPath)) {
     throw new Error(`ErsatzTV database not found: ${dbPath}`);
   }
+
   const busyTimeoutMs = opts.busyTimeoutMs ?? 8_000;
-  const db = new Database(dbPath, { readonly, fileMustExist: true, timeout: busyTimeoutMs });
+  const db = new Database(dbPath, {
+    readonly,
+    fileMustExist: true,
+    timeout: busyTimeoutMs,
+  });
+
   db.pragma(`busy_timeout = ${busyTimeoutMs}`);
   if (readonly) {
     try {
-      db.pragma('query_only = ON');
+      db.pragma("query_only = ON");
     } catch {
       // older sqlite may not support query_only
     }
   }
+
   // Do not force journal_mode=WAL — that needs an exclusive lock and can hang
   // while ErsatzTV has the database open.
   return db;
@@ -98,11 +107,11 @@ export function promoNextNames(channelName: string): {
 
 /** Schedule-item columns that can hold a filler preset id. */
 const SCHEDULE_FILLER_COLUMNS = [
-  'PreRollFillerId',
-  'MidRollFillerId',
-  'PostRollFillerId',
-  'TailFillerId',
-  'FallbackFillerId',
+  "PreRollFillerId",
+  "MidRollFillerId",
+  "PostRollFillerId",
+  "TailFillerId",
+  "FallbackFillerId",
 ] as const;
 
 /** ErsatzTV FillerKind + ProgramScheduleItem column for each placement. */
@@ -110,24 +119,32 @@ export const FILLER_PLACEMENT_META: Record<
   FillerPlacement,
   { fillerKind: number; column: string }
 > = {
-  pre: { fillerKind: 1, column: 'PreRollFillerId' },
-  middle: { fillerKind: 2, column: 'MidRollFillerId' },
-  post: { fillerKind: 3, column: 'PostRollFillerId' },
-  tail: { fillerKind: 4, column: 'TailFillerId' },
+  pre: { fillerKind: 1, column: "PreRollFillerId" },
+  middle: { fillerKind: 2, column: "MidRollFillerId" },
+  post: { fillerKind: 3, column: "PostRollFillerId" },
+  tail: { fillerKind: 4, column: "TailFillerId" },
 };
 
 export function loadSchema(db: Database.Database): DbSchema {
   if (schemaCache) return schemaCache;
+
   const tables = new Set(
-    (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map(
-      (r) => r.name,
-    ),
+    (
+      db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
+        .all() as Array<{ name: string }>
+    ).map((r) => r.name),
   );
+
   const columns = new Map<string, Set<string>>();
   for (const table of tables) {
-    const cols = db.prepare(`PRAGMA table_info(${quoteIdent(table)})`).all() as Array<{ name: string }>;
+    const cols = db
+      .prepare(`PRAGMA table_info(${quoteIdent(table)})`)
+      .all() as Array<{ name: string }>;
+
     columns.set(table, new Set(cols.map((c) => c.name)));
   }
+
   schemaCache = { tables, columns };
   return schemaCache;
 }
@@ -151,19 +168,28 @@ function requireColumns(schema: DbSchema, table: string, cols: string[]): void {
   const have = schema.columns.get(table) ?? new Set();
   for (const col of cols) {
     if (!have.has(col)) {
-      throw new Error(`Expected column ${table}.${col} missing from ersatztv.sqlite3`);
+      throw new Error(
+        `Expected column ${table}.${col} missing from ersatztv.sqlite3`,
+      );
     }
   }
 }
 
 function pickMediaFileTable(schema: DbSchema): string {
-  if (schema.tables.has('MediaFile')) return 'MediaFile';
-  if (schema.tables.has('MediaFiles')) return 'MediaFiles';
-  throw new Error('MediaFile table not found');
+  if (schema.tables.has("MediaFile")) return "MediaFile";
+  if (schema.tables.has("MediaFiles")) return "MediaFiles";
+
+  throw new Error("MediaFile table not found");
 }
 
-function pickDurationExpression(schema: DbSchema, mediaVersionTable: string | null): string {
-  if (mediaVersionTable && schema.columns.get(mediaVersionTable)?.has('Duration')) {
+function pickDurationExpression(
+  schema: DbSchema,
+  mediaVersionTable: string | null,
+): string {
+  if (
+    mediaVersionTable &&
+    schema.columns.get(mediaVersionTable)?.has("Duration")
+  ) {
     // EF Core SQLite may store TimeSpan as "d.hh:mm:ss", "hh:mm:ss", or integer ticks.
     return `CASE
       WHEN typeof(mv.Duration) IN ('integer', 'real') THEN CAST(mv.Duration AS REAL) / 10000000.0
@@ -179,30 +205,47 @@ function pickDurationExpression(schema: DbSchema, mediaVersionTable: string | nu
       ELSE NULL
     END`;
   }
-  return 'NULL';
+
+  return "NULL";
 }
 
 /** ErsatzTV stores FKs on MediaVersion as MovieId/EpisodeId/..., not MediaItemId. */
 function mediaVersionOwnerColumns(schema: DbSchema): string[] {
-  const cols = schema.columns.get('MediaVersion') ?? new Set();
-  const known = ['MovieId', 'EpisodeId', 'MusicVideoId', 'OtherVideoId', 'SongId', 'ImageId', 'RemoteStreamId', 'MediaItemId'];
+  const cols = schema.columns.get("MediaVersion") ?? new Set();
+  const known = [
+    "MovieId",
+    "EpisodeId",
+    "MusicVideoId",
+    "OtherVideoId",
+    "SongId",
+    "ImageId",
+    "RemoteStreamId",
+    "MediaItemId",
+  ];
+
   return known.filter((c) => cols.has(c));
 }
 
 function mediaVersionJoinOnPlayoutItem(schema: DbSchema): string {
   const owners = mediaVersionOwnerColumns(schema);
   if (owners.length === 0) {
-    throw new Error('MediaVersion has no owner FK columns (MovieId/EpisodeId/...)');
+    throw new Error(
+      "MediaVersion has no owner FK columns (MovieId/EpisodeId/...)",
+    );
   }
-  return owners.map((c) => `mv.${c} = pi.MediaItemId`).join(' OR ');
+
+  return owners.map((c) => `mv.${c} = pi.MediaItemId`).join(" OR ");
 }
 
 function mediaVersionMediaItemIdExpr(schema: DbSchema): string {
   const owners = mediaVersionOwnerColumns(schema);
   if (owners.length === 0) {
-    throw new Error('MediaVersion has no owner FK columns (MovieId/EpisodeId/...)');
+    throw new Error(
+      "MediaVersion has no owner FK columns (MovieId/EpisodeId/...)",
+    );
   }
-  return `COALESCE(${owners.map((c) => `mv.${c}`).join(', ')})`;
+
+  return `COALESCE(${owners.map((c) => `mv.${c}`).join(", ")})`;
 }
 
 export function getUpcomingPlayoutItems(
@@ -212,25 +255,36 @@ export function getUpcomingPlayoutItems(
   limit = 20,
 ): PlayoutRow[] {
   const schema = loadSchema(db);
-  requireColumns(schema, 'PlayoutItem', ['Id', 'MediaItemId', 'Start', 'Finish', 'FillerKind', 'PlayoutId']);
-  requireColumns(schema, 'Playout', ['Id', 'ChannelId']);
-  requireColumns(schema, 'Channel', ['Id', 'Number', 'Name']);
+  requireColumns(schema, "PlayoutItem", [
+    "Id",
+    "MediaItemId",
+    "Start",
+    "Finish",
+    "FillerKind",
+    "PlayoutId",
+  ]);
+
+  requireColumns(schema, "Playout", ["Id", "ChannelId"]);
+  requireColumns(schema, "Channel", ["Id", "Number", "Name"]);
 
   const mediaFileTable = pickMediaFileTable(schema);
-  requireColumns(schema, mediaFileTable, ['Path', 'MediaVersionId']);
-  requireTable(schema, 'MediaVersion');
-  requireColumns(schema, 'MediaVersion', ['Id']);
+  requireColumns(schema, mediaFileTable, ["Path", "MediaVersionId"]);
+  requireTable(schema, "MediaVersion");
+  requireColumns(schema, "MediaVersion", ["Id"]);
 
-  const durationExpr = pickDurationExpression(schema, 'MediaVersion');
+  const durationExpr = pickDurationExpression(schema, "MediaVersion");
   const versionJoin = mediaVersionJoinOnPlayoutItem(schema);
-  const scheduleKindCol = schema.columns.get('Playout')?.has('ScheduleKind')
-    ? 'p.ScheduleKind'
-    : schema.columns.get('Playout')?.has('PlayoutKind')
-      ? 'p.PlayoutKind'
-      : 'NULL';
-  const programScheduleCol = schema.columns.get('Playout')?.has('ProgramScheduleId')
-    ? 'p.ProgramScheduleId'
-    : 'NULL';
+  const scheduleKindCol = schema.columns.get("Playout")?.has("ScheduleKind")
+    ? "p.ScheduleKind"
+    : schema.columns.get("Playout")?.has("PlayoutKind")
+      ? "p.PlayoutKind"
+      : "NULL";
+
+  const programScheduleCol = schema.columns
+    .get("Playout")
+    ?.has("ProgramScheduleId")
+    ? "p.ProgramScheduleId"
+    : "NULL";
 
   const sql = `
     SELECT
@@ -266,12 +320,19 @@ export function getCurrentPrimaryItem(
   nowUtcIso: string,
 ): PlayoutRow | undefined {
   const schema = loadSchema(db);
-  requireColumns(schema, 'PlayoutItem', ['MediaItemId', 'Start', 'Finish', 'FillerKind', 'PlayoutId']);
-  requireColumns(schema, 'Playout', ['Id', 'ChannelId']);
-  requireColumns(schema, 'Channel', ['Id', 'Number', 'Name']);
+  requireColumns(schema, "PlayoutItem", [
+    "MediaItemId",
+    "Start",
+    "Finish",
+    "FillerKind",
+    "PlayoutId",
+  ]);
+
+  requireColumns(schema, "Playout", ["Id", "ChannelId"]);
+  requireColumns(schema, "Channel", ["Id", "Number", "Name"]);
   const mediaFileTable = pickMediaFileTable(schema);
-  requireTable(schema, 'MediaVersion');
-  const durationExpr = pickDurationExpression(schema, 'MediaVersion');
+  requireTable(schema, "MediaVersion");
+  const durationExpr = pickDurationExpression(schema, "MediaVersion");
   const versionJoin = mediaVersionJoinOnPlayoutItem(schema);
 
   const sql = `
@@ -300,7 +361,9 @@ export function getCurrentPrimaryItem(
     ORDER BY pi.Start DESC
     LIMIT 1
   `;
-  return db.prepare(sql).get(channelNumber, nowUtcIso, nowUtcIso) as PlayoutRow | undefined;
+
+  return db.prepare(sql).get(channelNumber, nowUtcIso, nowUtcIso) as
+    PlayoutRow | undefined;
 }
 
 export function getPrimaryItemsAfter(
@@ -315,13 +378,18 @@ export function getPrimaryItemsAfter(
 }
 
 /** Resolve human titles from ErsatzTV metadata tables (preferred over XMLTV). */
-export function getMediaItemMetadata(db: Database.Database, mediaItemId: number): MediaItemMetadata | undefined {
+export function getMediaItemMetadata(
+  db: Database.Database,
+  mediaItemId: number,
+): MediaItemMetadata | undefined {
   const schema = loadSchema(db);
 
-  if (schema.tables.has('Episode') && schema.tables.has('EpisodeMetadata')) {
-    const epCols = schema.columns.get('EpisodeMetadata') ?? new Set();
-    if (epCols.has('Title') && epCols.has('EpisodeId')) {
-      const row = db.prepare(`
+  if (schema.tables.has("Episode") && schema.tables.has("EpisodeMetadata")) {
+    const epCols = schema.columns.get("EpisodeMetadata") ?? new Set();
+    if (epCols.has("Title") && epCols.has("EpisodeId")) {
+      const row = db
+        .prepare(
+          `
         SELECT
           em.Title AS episodeTitle,
           em.EpisodeNumber AS episodeNumber,
@@ -334,7 +402,9 @@ export function getMediaItemMetadata(db: Database.Database, mediaItemId: number)
         WHERE e.Id = ?
         ORDER BY em.MetadataKind ASC, em.Id ASC
         LIMIT 1
-      `).get(mediaItemId) as
+      `,
+        )
+        .get(mediaItemId) as
         | {
             episodeTitle?: string;
             episodeNumber?: number;
@@ -342,31 +412,43 @@ export function getMediaItemMetadata(db: Database.Database, mediaItemId: number)
             showTitle?: string;
           }
         | undefined;
+
       if (row && (row.showTitle || row.episodeTitle)) {
         return {
-          kind: 'episode',
-          title: stripTitleYear(row.showTitle || row.episodeTitle || `Episode ${mediaItemId}`),
+          kind: "episode",
+          title: stripTitleYear(
+            row.showTitle || row.episodeTitle || `Episode ${mediaItemId}`,
+          ),
           episodeTitle: row.episodeTitle || undefined,
-          seasonNumber: Number.isFinite(Number(row.seasonNumber)) ? Number(row.seasonNumber) : undefined,
-          episodeNumber: Number.isFinite(Number(row.episodeNumber)) ? Number(row.episodeNumber) : undefined,
+          seasonNumber: Number.isFinite(Number(row.seasonNumber))
+            ? Number(row.seasonNumber)
+            : undefined,
+          episodeNumber: Number.isFinite(Number(row.episodeNumber))
+            ? Number(row.episodeNumber)
+            : undefined,
         };
       }
     }
   }
 
-  if (schema.tables.has('Movie') && schema.tables.has('MovieMetadata')) {
-    const movieCols = schema.columns.get('MovieMetadata') ?? new Set();
-    if (movieCols.has('Title') && movieCols.has('MovieId')) {
-      const row = db.prepare(`
+  if (schema.tables.has("Movie") && schema.tables.has("MovieMetadata")) {
+    const movieCols = schema.columns.get("MovieMetadata") ?? new Set();
+    if (movieCols.has("Title") && movieCols.has("MovieId")) {
+      const row = db
+        .prepare(
+          `
         SELECT Title AS title
         FROM MovieMetadata
         WHERE MovieId = ?
         ORDER BY MetadataKind ASC, Id ASC
         LIMIT 1
-      `).get(mediaItemId) as { title?: string } | undefined;
+      `,
+        )
+        .get(mediaItemId) as { title?: string } | undefined;
+
       if (row?.title) {
         return {
-          kind: 'movie',
+          kind: "movie",
           title: stripTitleYear(row.title),
         };
       }
@@ -377,8 +459,11 @@ export function getMediaItemMetadata(db: Database.Database, mediaItemId: number)
 }
 
 /** Best-effort SxxExx + title from a media file path. */
-export function metadataFromFilePath(filePath?: string): MediaItemMetadata | undefined {
+export function metadataFromFilePath(
+  filePath?: string,
+): MediaItemMetadata | undefined {
   if (!filePath) return undefined;
+
   const base = path.basename(filePath);
   const se = /[Ss](\d+)[Ee](\d+)/.exec(base);
   const showDir = path.basename(path.dirname(path.dirname(filePath))); // .../Show/Season X/file
@@ -386,28 +471,48 @@ export function metadataFromFilePath(filePath?: string): MediaItemMetadata | und
   let title = stripTitleYear(showDir);
   if (!title || /^season\s+\d+/i.test(title)) {
     title = stripTitleYear(
-      base.replace(/\.[^.]+$/, '').replace(/\s*[-_.]?\s*[Ss]\d+[Ee]\d+.*$/, '').trim(),
+      base
+        .replace(/\.[^.]+$/, "")
+        .replace(/\s*[-_.]?\s*[Ss]\d+[Ee]\d+.*$/, "")
+        .trim(),
     );
   }
-  const epName = /[Ss]\d+[Ee]\d+\s*[-_.]+\s*(.+?)\.[^.]+$/.exec(base)?.[1]?.trim();
+
+  const epName = /[Ss]\d+[Ee]\d+\s*[-_.]+\s*(.+?)\.[^.]+$/
+    .exec(base)?.[1]
+    ?.trim();
+
   if (!title && !epName && !se) return undefined;
+
   return {
-    kind: se ? 'episode' : 'other',
+    kind: se ? "episode" : "other",
     title: stripTitleYear(title || epName || base),
     episodeTitle: epName || undefined,
-    seasonNumber: se ? Number(se[1]) : (/season\s+(\d+)/i.exec(seasonDir)?.[1] ? Number(/season\s+(\d+)/i.exec(seasonDir)![1]) : undefined),
+    seasonNumber: se
+      ? Number(se[1])
+      : /season\s+(\d+)/i.exec(seasonDir)?.[1]
+        ? Number(/season\s+(\d+)/i.exec(seasonDir)![1])
+        : undefined,
     episodeNumber: se ? Number(se[2]) : undefined,
   };
 }
 
-export function findMediaItemByPath(db: Database.Database, absolutePath: string): MediaFileRow | undefined {
+export function findMediaItemByPath(
+  db: Database.Database,
+  absolutePath: string,
+): MediaFileRow | undefined {
   const schema = loadSchema(db);
   const mediaFileTable = pickMediaFileTable(schema);
-  requireColumns(schema, mediaFileTable, ['Path', 'MediaVersionId']);
-  requireColumns(schema, 'MediaVersion', ['Id']);
+  requireColumns(schema, mediaFileTable, ["Path", "MediaVersionId"]);
+  requireColumns(schema, "MediaVersion", ["Id"]);
   const mediaItemExpr = mediaVersionMediaItemIdExpr(schema);
-  const variants = [absolutePath, absolutePath.replace(/\\/g, '/'), absolutePath.replace(/\//g, '\\')];
-  const placeholders = variants.map(() => '?').join(',');
+  const variants = [
+    absolutePath,
+    absolutePath.replace(/\\/g, "/"),
+    absolutePath.replace(/\//g, "\\"),
+  ];
+
+  const placeholders = variants.map(() => "?").join(",");
   const sql = `
     SELECT ${mediaItemExpr} AS mediaItemId, mf.Path AS path
     FROM ${quoteIdent(mediaFileTable)} mf
@@ -415,14 +520,18 @@ export function findMediaItemByPath(db: Database.Database, absolutePath: string)
     WHERE mf.Path IN (${placeholders})
     LIMIT 1
   `;
+
   return db.prepare(sql).get(...variants) as MediaFileRow | undefined;
 }
 
-export function findMediaItemByFileName(db: Database.Database, fileName: string): MediaFileRow | undefined {
+export function findMediaItemByFileName(
+  db: Database.Database,
+  fileName: string,
+): MediaFileRow | undefined {
   const schema = loadSchema(db);
   const mediaFileTable = pickMediaFileTable(schema);
-  requireColumns(schema, mediaFileTable, ['Path', 'MediaVersionId']);
-  requireColumns(schema, 'MediaVersion', ['Id']);
+  requireColumns(schema, mediaFileTable, ["Path", "MediaVersionId"]);
+  requireColumns(schema, "MediaVersion", ["Id"]);
   const mediaItemExpr = mediaVersionMediaItemIdExpr(schema);
   const sql = `
     SELECT ${mediaItemExpr} AS mediaItemId, mf.Path AS path
@@ -432,13 +541,18 @@ export function findMediaItemByFileName(db: Database.Database, fileName: string)
     ORDER BY length(mf.Path) ASC
     LIMIT 1
   `;
+
   return db.prepare(sql).get(`%${fileName}`) as MediaFileRow | undefined;
 }
 
-export function listChannelNumbers(db: Database.Database): Array<{ id: number; number: string; name: string }> {
+export function listChannelNumbers(
+  db: Database.Database,
+): Array<{ id: number; number: string; name: string }> {
   const schema = loadSchema(db);
-  requireColumns(schema, 'Channel', ['Id', 'Number', 'Name']);
-  return db.prepare(`SELECT Id AS id, Number AS number, Name AS name FROM Channel`).all() as Array<{
+  requireColumns(schema, "Channel", ["Id", "Number", "Name"]);
+  return db
+    .prepare(`SELECT Id AS id, Number AS number, Name AS name FROM Channel`)
+    .all() as Array<{
     id: number;
     number: string;
     name: string;
@@ -448,23 +562,29 @@ export function listChannelNumbers(db: Database.Database): Array<{ id: number; n
 export function getPlayoutForChannel(
   db: Database.Database,
   channelNumber: string,
-): {
-  playoutId: number;
-  channelId: number;
-  programScheduleId: number | null;
-  scheduleKind: number | string | null;
-} | undefined {
+):
+  | {
+      playoutId: number;
+      channelId: number;
+      programScheduleId: number | null;
+      scheduleKind: number | string | null;
+    }
+  | undefined {
   const schema = loadSchema(db);
-  requireColumns(schema, 'Playout', ['Id', 'ChannelId']);
-  requireColumns(schema, 'Channel', ['Id', 'Number']);
-  const scheduleKindCol = schema.columns.get('Playout')?.has('ScheduleKind')
-    ? 'p.ScheduleKind'
-    : schema.columns.get('Playout')?.has('PlayoutKind')
-      ? 'p.PlayoutKind'
-      : 'NULL';
-  const programScheduleCol = schema.columns.get('Playout')?.has('ProgramScheduleId')
-    ? 'p.ProgramScheduleId'
-    : 'NULL';
+  requireColumns(schema, "Playout", ["Id", "ChannelId"]);
+  requireColumns(schema, "Channel", ["Id", "Number"]);
+  const scheduleKindCol = schema.columns.get("Playout")?.has("ScheduleKind")
+    ? "p.ScheduleKind"
+    : schema.columns.get("Playout")?.has("PlayoutKind")
+      ? "p.PlayoutKind"
+      : "NULL";
+
+  const programScheduleCol = schema.columns
+    .get("Playout")
+    ?.has("ProgramScheduleId")
+    ? "p.ProgramScheduleId"
+    : "NULL";
+
   const sql = `
     SELECT
       p.Id AS playoutId,
@@ -476,6 +596,7 @@ export function getPlayoutForChannel(
     WHERE c.Number = ?
     LIMIT 1
   `;
+
   return db.prepare(sql).get(channelNumber) as
     | {
         playoutId: number;
@@ -492,8 +613,9 @@ export function scheduleSharedByOtherChannels(
   channelId: number,
 ): string[] {
   const schema = loadSchema(db);
-  if (!schema.columns.get('Playout')?.has('ProgramScheduleId')) return [];
-  requireColumns(schema, 'Channel', ['Id', 'Number', 'Name']);
+  if (!schema.columns.get("Playout")?.has("ProgramScheduleId")) return [];
+
+  requireColumns(schema, "Channel", ["Id", "Number", "Name"]);
   const rows = db
     .prepare(
       `
@@ -503,26 +625,41 @@ export function scheduleSharedByOtherChannels(
       WHERE p.ProgramScheduleId = ? AND c.Id != ?
     `,
     )
-    .all(programScheduleId, channelId) as Array<{ number: string; name: string }>;
+    .all(programScheduleId, channelId) as Array<{
+    number: string;
+    name: string;
+  }>;
+
   return rows.map((r) => `${r.number} ${r.name}`);
 }
 
-export function listScheduleItemIds(db: Database.Database, programScheduleId: number): number[] {
+export function listScheduleItemIds(
+  db: Database.Database,
+  programScheduleId: number,
+): number[] {
   const schema = loadSchema(db);
-  requireColumns(schema, 'ProgramScheduleItem', ['Id', 'ProgramScheduleId']);
+  requireColumns(schema, "ProgramScheduleItem", ["Id", "ProgramScheduleId"]);
   const rows = db
-    .prepare(`SELECT Id AS id FROM ProgramScheduleItem WHERE ProgramScheduleId = ?`)
+    .prepare(
+      `SELECT Id AS id FROM ProgramScheduleItem WHERE ProgramScheduleId = ?`,
+    )
     .all(programScheduleId) as Array<{ id: number }>;
+
   return rows.map((r) => r.id);
 }
 
-export function getPreRollFillerName(db: Database.Database, fillerId: number | null | undefined): string | undefined {
+export function getPreRollFillerName(
+  db: Database.Database,
+  fillerId: number | null | undefined,
+): string | undefined {
   if (!fillerId) return undefined;
+
   const schema = loadSchema(db);
-  requireColumns(schema, 'FillerPreset', ['Id', 'Name']);
-  const row = db.prepare(`SELECT Name AS name FROM FillerPreset WHERE Id = ?`).get(fillerId) as
-    | { name: string }
-    | undefined;
+  requireColumns(schema, "FillerPreset", ["Id", "Name"]);
+  const row = db
+    .prepare(`SELECT Name AS name FROM FillerPreset WHERE Id = ?`)
+    .get(fillerId) as { name: string } | undefined;
+
   return row?.name;
 }
 
@@ -536,44 +673,51 @@ export function upsertManualCollection(
   mediaItemId: number,
 ): { id: number; created: boolean } {
   const schema = loadSchema(db);
-  requireTable(schema, 'Collection');
-  requireTable(schema, 'CollectionItem');
-  requireColumns(schema, 'Collection', ['Id', 'Name']);
-  requireColumns(schema, 'CollectionItem', ['CollectionId', 'MediaItemId']);
+  requireTable(schema, "Collection");
+  requireTable(schema, "CollectionItem");
+  requireColumns(schema, "Collection", ["Id", "Name"]);
+  requireColumns(schema, "CollectionItem", ["CollectionId", "MediaItemId"]);
 
-  const cols = schema.columns.get('Collection') ?? new Set();
-  let existing = db.prepare(`SELECT Id AS id FROM Collection WHERE Name = ?`).get(name) as
-    | { id: number }
-    | undefined;
+  const cols = schema.columns.get("Collection") ?? new Set();
+  let existing = db
+    .prepare(`SELECT Id AS id FROM Collection WHERE Name = ?`)
+    .get(name) as { id: number } | undefined;
+
   let created = false;
 
   if (!existing) {
-    const insertCols = ['Name'];
+    const insertCols = ["Name"];
     const insertVals: Array<string | number> = [name];
-    if (cols.has('UseCustomPlaybackOrder')) {
-      insertCols.push('UseCustomPlaybackOrder');
+    if (cols.has("UseCustomPlaybackOrder")) {
+      insertCols.push("UseCustomPlaybackOrder");
       insertVals.push(0);
     }
-    const placeholders = insertCols.map(() => '?').join(', ');
+
+    const placeholders = insertCols.map(() => "?").join(", ");
     const info = db
-      .prepare(`INSERT INTO Collection (${insertCols.join(', ')}) VALUES (${placeholders})`)
+      .prepare(
+        `INSERT INTO Collection (${insertCols.join(", ")}) VALUES (${placeholders})`,
+      )
       .run(...insertVals);
+
     existing = { id: Number(info.lastInsertRowid) };
     created = true;
   }
 
   // Replace membership so the collection always points at the current promo file.
-  db.prepare(`DELETE FROM CollectionItem WHERE CollectionId = ?`).run(existing.id);
-  const itemCols = schema.columns.get('CollectionItem') ?? new Set();
-  if (itemCols.has('CustomIndex')) {
+  db.prepare(`DELETE FROM CollectionItem WHERE CollectionId = ?`).run(
+    existing.id,
+  );
+
+  const itemCols = schema.columns.get("CollectionItem") ?? new Set();
+  if (itemCols.has("CustomIndex")) {
     db.prepare(
       `INSERT INTO CollectionItem (CollectionId, MediaItemId, CustomIndex) VALUES (?, ?, 0)`,
     ).run(existing.id, mediaItemId);
   } else {
-    db.prepare(`INSERT INTO CollectionItem (CollectionId, MediaItemId) VALUES (?, ?)`).run(
-      existing.id,
-      mediaItemId,
-    );
+    db.prepare(
+      `INSERT INTO CollectionItem (CollectionId, MediaItemId) VALUES (?, ?)`,
+    ).run(existing.id, mediaItemId);
   }
 
   return { id: existing.id, created };
@@ -591,20 +735,21 @@ export function upsertFillerPresetForCollection(
   fillerKind: number,
 ): { id: number; created: boolean } {
   const schema = loadSchema(db);
-  requireColumns(schema, 'FillerPreset', [
-    'Name',
-    'FillerKind',
-    'FillerMode',
-    'Count',
-    'CollectionType',
-    'CollectionId',
-    'AllowWatermarks',
+  requireColumns(schema, "FillerPreset", [
+    "Name",
+    "FillerKind",
+    "FillerMode",
+    "Count",
+    "CollectionType",
+    "CollectionId",
+    "AllowWatermarks",
   ]);
 
-  const existing = db.prepare(`SELECT Id AS id FROM FillerPreset WHERE Name = ?`).get(name) as
-    | { id: number }
-    | undefined;
-  const cols = schema.columns.get('FillerPreset') ?? new Set();
+  const existing = db
+    .prepare(`SELECT Id AS id FROM FillerPreset WHERE Name = ?`)
+    .get(name) as { id: number } | undefined;
+
+  const cols = schema.columns.get("FillerPreset") ?? new Set();
   // FillerMode Count = 2, CollectionType Collection = 0
   if (existing) {
     db.prepare(
@@ -623,27 +768,42 @@ export function upsertFillerPresetForCollection(
       WHERE Id = ?
     `,
     ).run(fillerKind, collectionId, existing.id);
+
     return { id: existing.id, created: false };
   }
 
   const insertCols = [
-    'Name',
-    'FillerKind',
-    'FillerMode',
-    'Count',
-    'CollectionType',
-    'CollectionId',
-    'AllowWatermarks',
+    "Name",
+    "FillerKind",
+    "FillerMode",
+    "Count",
+    "CollectionType",
+    "CollectionId",
+    "AllowWatermarks",
   ];
-  const insertVals: Array<string | number> = [name, fillerKind, 2, 1, 0, collectionId, 0];
-  if (cols.has('UseChaptersAsMediaItems')) {
-    insertCols.push('UseChaptersAsMediaItems');
+
+  const insertVals: Array<string | number> = [
+    name,
+    fillerKind,
+    2,
+    1,
+    0,
+    collectionId,
+    0,
+  ];
+
+  if (cols.has("UseChaptersAsMediaItems")) {
+    insertCols.push("UseChaptersAsMediaItems");
     insertVals.push(0);
   }
-  const placeholders = insertCols.map(() => '?').join(', ');
+
+  const placeholders = insertCols.map(() => "?").join(", ");
   const info = db
-    .prepare(`INSERT INTO FillerPreset (${insertCols.join(', ')}) VALUES (${placeholders})`)
+    .prepare(
+      `INSERT INTO FillerPreset (${insertCols.join(", ")}) VALUES (${placeholders})`,
+    )
     .run(...insertVals);
+
   return { id: Number(info.lastInsertRowid), created: true };
 }
 
@@ -662,7 +822,7 @@ function clearScheduleFillersByName(
     return { cleared: 0, columnsTouched: [] };
   }
 
-  const namePlaceholders = fillerNames.map(() => '?').join(', ');
+  const namePlaceholders = fillerNames.map(() => "?").join(", ");
   let cleared = 0;
   const columnsTouched: string[] = [];
 
@@ -705,8 +865,10 @@ function fillerPresetReferencedAnywhere(
       `,
       )
       .get(fillerId) as { ok: number } | undefined;
+
     if (row) return true;
   }
+
   return false;
 }
 
@@ -717,12 +879,14 @@ function deleteOrphanFillerPreset(
   columns: string[],
 ): boolean {
   const schema = loadSchema(db);
-  if (!schema.tables.has('FillerPreset')) return false;
-  requireColumns(schema, 'FillerPreset', ['Id', 'Name']);
+  if (!schema.tables.has("FillerPreset")) return false;
+
+  requireColumns(schema, "FillerPreset", ["Id", "Name"]);
 
   const existing = db
     .prepare(`SELECT Id AS id FROM FillerPreset WHERE Name = ?`)
     .get(fillerName) as { id: number } | undefined;
+
   if (!existing) return false;
   if (fillerPresetReferencedAnywhere(db, existing.id, columns)) return false;
 
@@ -748,27 +912,34 @@ export function applyScheduleItemFillers(
   options: ApplyScheduleFillersOptions,
 ): { notes: string[]; itemCount: number } {
   const schema = loadSchema(db);
-  requireColumns(schema, 'ProgramScheduleItem', ['Id', 'ProgramScheduleId']);
-  const itemCols = schema.columns.get('ProgramScheduleItem') ?? new Set();
+  requireColumns(schema, "ProgramScheduleItem", ["Id", "ProgramScheduleId"]);
+  const itemCols = schema.columns.get("ProgramScheduleItem") ?? new Set();
   const fillerColumns = scheduleFillerColumnsPresent(itemCols);
   const names = promoNextNames(channelName);
   const selectedSet = new Set(options.selected);
   const notes: string[] = [];
 
   const itemCountRow = db
-    .prepare(`SELECT COUNT(*) AS n FROM ProgramScheduleItem WHERE ProgramScheduleId = ?`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM ProgramScheduleItem WHERE ProgramScheduleId = ?`,
+    )
     .get(programScheduleId) as { n: number };
+
   const itemCount = itemCountRow.n;
 
   if (options.cleanupLegacy) {
     // First push version used an untyped filler (same name as the collection).
-    const legacyClear = clearScheduleFillersByName(db, programScheduleId, fillerColumns, [
-      names.legacyFiller,
-    ]);
+    const legacyClear = clearScheduleFillersByName(
+      db,
+      programScheduleId,
+      fillerColumns,
+      [names.legacyFiller],
+    );
+
     if (legacyClear.cleared > 0) {
       notes.push(
         `Legacy filler "${names.legacyFiller}": cleared ${legacyClear.cleared} slot(s)` +
-          ` (${legacyClear.columnsTouched.join(', ')})`,
+          ` (${legacyClear.columnsTouched.join(", ")})`,
       );
     }
   }
@@ -776,14 +947,20 @@ export function applyScheduleItemFillers(
   for (const placement of FILLER_PLACEMENTS) {
     const meta = FILLER_PLACEMENT_META[placement];
     if (!itemCols.has(meta.column)) {
-      notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: column ${meta.column} missing — skipped`);
+      notes.push(
+        `${FILLER_PLACEMENT_LABELS[placement]}: column ${meta.column} missing — skipped`,
+      );
+
       continue;
     }
 
     if (selectedSet.has(placement)) {
       const presetId = options.presetIds[placement];
       if (presetId == null) {
-        notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: no preset id — skipped`);
+        notes.push(
+          `${FILLER_PLACEMENT_LABELS[placement]}: no preset id — skipped`,
+        );
+
         continue;
       }
 
@@ -809,28 +986,42 @@ export function applyScheduleItemFillers(
       const replaced = previous
         .map((p) => p.name)
         .filter((n): n is string => Boolean(n));
+
       notes.push(
         `${FILLER_PLACEMENT_LABELS[placement]}: set on ${result.changes} item(s)` +
-          (replaced.length ? ` (was: ${replaced.join(', ')})` : ''),
+          (replaced.length ? ` (was: ${replaced.join(", ")})` : ""),
       );
+
       continue;
     }
 
     if (!options.cleanupUnselected) continue;
 
     const typedName = names.filler(placement);
-    const result = clearScheduleFillersByName(db, programScheduleId, [meta.column], [typedName]);
+    const result = clearScheduleFillersByName(
+      db,
+      programScheduleId,
+      [meta.column],
+      [typedName],
+    );
+
     if (result.cleared > 0) {
       notes.push(
         `${FILLER_PLACEMENT_LABELS[placement]}: cleared ${result.cleared} item(s) matching promo name`,
       );
     }
+
     if (deleteOrphanFillerPreset(db, typedName, fillerColumns)) {
-      notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: deleted unused preset "${typedName}"`);
+      notes.push(
+        `${FILLER_PLACEMENT_LABELS[placement]}: deleted unused preset "${typedName}"`,
+      );
     }
   }
 
-  if (options.cleanupLegacy && deleteOrphanFillerPreset(db, names.legacyFiller, fillerColumns)) {
+  if (
+    options.cleanupLegacy &&
+    deleteOrphanFillerPreset(db, names.legacyFiller, fillerColumns)
+  ) {
     notes.push(`Legacy filler preset "${names.legacyFiller}" deleted (unused)`);
   }
 
@@ -843,34 +1034,42 @@ export function ensurePromoLibrary(
   libraryPath: string,
 ): { libraryId: number } {
   const schema = loadSchema(db);
-  requireTable(schema, 'Library');
-  requireColumns(schema, 'Library', ['Id', 'Name']);
+  requireTable(schema, "Library");
+  requireColumns(schema, "Library", ["Id", "Name"]);
 
   const localSource = findLocalMediaSource(db, schema);
-  let library = db.prepare(`SELECT Id AS id FROM Library WHERE Name = ?`).get(libraryName) as
-    | { id: number }
-    | undefined;
+  let library = db
+    .prepare(`SELECT Id AS id FROM Library WHERE Name = ?`)
+    .get(libraryName) as { id: number } | undefined;
 
   if (!library) {
-    if (!schema.tables.has('LocalLibrary')) {
-      throw new Error('LocalLibrary table not found; cannot create promo library');
+    if (!schema.tables.has("LocalLibrary")) {
+      throw new Error(
+        "LocalLibrary table not found; cannot create promo library",
+      );
     }
-    requireColumns(schema, 'LocalLibrary', ['Id']);
-    const libCols = schema.columns.get('Library') ?? new Set();
-    const insertCols = ['Name'];
+
+    requireColumns(schema, "LocalLibrary", ["Id"]);
+    const libCols = schema.columns.get("Library") ?? new Set();
+    const insertCols = ["Name"];
     const insertVals: Array<string | number> = [libraryName];
-    if (libCols.has('MediaSourceId')) {
-      insertCols.push('MediaSourceId');
+    if (libCols.has("MediaSourceId")) {
+      insertCols.push("MediaSourceId");
       insertVals.push(localSource);
     }
-    if (libCols.has('MediaKind')) {
-      insertCols.push('MediaKind');
+
+    if (libCols.has("MediaKind")) {
+      insertCols.push("MediaKind");
       insertVals.push(4); // OtherVideos
     }
-    const placeholders = insertCols.map(() => '?').join(', ');
+
+    const placeholders = insertCols.map(() => "?").join(", ");
     const info = db
-      .prepare(`INSERT INTO Library (${insertCols.join(', ')}) VALUES (${placeholders})`)
+      .prepare(
+        `INSERT INTO Library (${insertCols.join(", ")}) VALUES (${placeholders})`,
+      )
       .run(...insertVals);
+
     const id = Number(info.lastInsertRowid);
     db.prepare(`INSERT INTO LocalLibrary (Id) VALUES (?)`).run(id);
     library = { id };
@@ -881,60 +1080,94 @@ export function ensurePromoLibrary(
 }
 
 function findLocalMediaSource(db: Database.Database, schema: DbSchema): number {
-  if (schema.tables.has('LocalMediaSource')) {
-    const row = db.prepare(`SELECT Id AS id FROM LocalMediaSource LIMIT 1`).get() as { id: number } | undefined;
+  if (schema.tables.has("LocalMediaSource")) {
+    const row = db
+      .prepare(`SELECT Id AS id FROM LocalMediaSource LIMIT 1`)
+      .get() as { id: number } | undefined;
+
     if (row) return row.id;
   }
-  if (schema.tables.has('MediaSource')) {
+
+  if (schema.tables.has("MediaSource")) {
     // Prefer a local source if Kind/type column exists
-    const cols = schema.columns.get('MediaSource') ?? new Set();
-    if (cols.has('Id')) {
-      const row = db.prepare(`SELECT Id AS id FROM MediaSource ORDER BY Id ASC LIMIT 1`).get() as
-        | { id: number }
-        | undefined;
+    const cols = schema.columns.get("MediaSource") ?? new Set();
+    if (cols.has("Id")) {
+      const row = db
+        .prepare(`SELECT Id AS id FROM MediaSource ORDER BY Id ASC LIMIT 1`)
+        .get() as { id: number } | undefined;
+
       if (row) return row.id;
     }
   }
-  throw new Error('No local media source found in ErsatzTV database');
+
+  throw new Error("No local media source found in ErsatzTV database");
 }
 
-function ensureLibraryPath(db: Database.Database, schema: DbSchema, libraryId: number, libraryPath: string): void {
-  if (!schema.tables.has('LibraryPath')) {
-    throw new Error('LibraryPath table not found');
+function ensureLibraryPath(
+  db: Database.Database,
+  schema: DbSchema,
+  libraryId: number,
+  libraryPath: string,
+): void {
+  if (!schema.tables.has("LibraryPath")) {
+    throw new Error("LibraryPath table not found");
   }
-  requireColumns(schema, 'LibraryPath', ['Id', 'Path', 'LibraryId']);
+
+  requireColumns(schema, "LibraryPath", ["Id", "Path", "LibraryId"]);
   const existing = db
-    .prepare(`SELECT Id AS id, Path AS path FROM LibraryPath WHERE LibraryId = ?`)
+    .prepare(
+      `SELECT Id AS id, Path AS path FROM LibraryPath WHERE LibraryId = ?`,
+    )
     .all(libraryId) as Array<{ id: number; path: string }>;
 
-  const normalized = libraryPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const match = existing.find((p) => p.path.replace(/\\/g, '/').replace(/\/+$/, '') === normalized);
+  const normalized = libraryPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const match = existing.find(
+    (p) => p.path.replace(/\\/g, "/").replace(/\/+$/, "") === normalized,
+  );
+
   if (match) return;
 
   if (existing.length === 1) {
-    db.prepare(`UPDATE LibraryPath SET Path = ? WHERE Id = ?`).run(libraryPath, existing[0].id);
+    db.prepare(`UPDATE LibraryPath SET Path = ? WHERE Id = ?`).run(
+      libraryPath,
+      existing[0].id,
+    );
+
     return;
   }
 
   if (existing.length === 0) {
-    db.prepare(`INSERT INTO LibraryPath (LibraryId, Path) VALUES (?, ?)`).run(libraryId, libraryPath);
+    db.prepare(`INSERT INTO LibraryPath (LibraryId, Path) VALUES (?, ?)`).run(
+      libraryId,
+      libraryPath,
+    );
+
     return;
   }
 
   // Multiple paths: add ours if missing
-  db.prepare(`INSERT INTO LibraryPath (LibraryId, Path) VALUES (?, ?)`).run(libraryId, libraryPath);
+  db.prepare(`INSERT INTO LibraryPath (LibraryId, Path) VALUES (?, ?)`).run(
+    libraryId,
+    libraryPath,
+  );
 }
 
-export function resolveDatabasePath(configured: string, etvConfigHint?: string): string {
+export function resolveDatabasePath(
+  configured: string,
+  etvConfigHint?: string,
+): string {
   if (configured && fs.existsSync(configured)) return configured;
+
   const candidates = [
     configured,
-    etvConfigHint ? path.join(etvConfigHint, 'ersatztv.sqlite3') : '',
-    '/config/ersatztv.sqlite3',
-    '/root/.local/share/ersatztv/ersatztv.sqlite3',
+    etvConfigHint ? path.join(etvConfigHint, "ersatztv.sqlite3") : "",
+    "/config/ersatztv.sqlite3",
+    "/root/.local/share/ersatztv/ersatztv.sqlite3",
   ].filter(Boolean);
+
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
   }
+
   return configured;
 }

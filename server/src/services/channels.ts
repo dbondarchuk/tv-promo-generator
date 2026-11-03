@@ -1,40 +1,50 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   AppSettings,
   ChannelOverrides,
   ChannelView,
-  ScheduleItemPreview,
   sanitizeChannelFolderName,
-} from '@promo/shared';
-import { EtvApiClient } from '../ersatztv/api.js';
+  ScheduleItemPreview,
+} from "@promo/shared";
+import type Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  openDb,
+  downloadLogo,
+  extractDominantColor,
+  logoCacheFile,
+  resolveLogoUrl,
+} from "../color.js";
+import { loadChannelOverrides, updateChannelOverride } from "../config.js";
+import { EtvApiClient } from "../ersatztv/api.js";
+import {
   getCurrentPrimaryItem,
-  getPrimaryItemsAfter,
   getMediaItemMetadata,
-  metadataFromFilePath,
-  stripTitleYear,
+  getPrimaryItemsAfter,
   MediaItemMetadata,
+  metadataFromFilePath,
+  openDb,
   PlayoutRow,
-} from '../ersatztv/db.js';
-import type Database from 'better-sqlite3';
-import { parseM3u, M3uChannel } from '../ersatztv/m3u.js';
-import { parseXmltv, XmltvGuide, XmltvProgramme } from '../ersatztv/xmltv.js';
-import { downloadLogo, extractDominantColor, logoCacheFile, resolveLogoUrl } from '../color.js';
-import { loadChannelOverrides, updateChannelOverride } from '../config.js';
-import { fileExists, findLibraryFile, promoOutputFile, rewritePath } from '../util/paths.js';
-import { createLogger } from '../util/log.js';
+  stripTitleYear,
+} from "../ersatztv/db.js";
+import { M3uChannel, parseM3u } from "../ersatztv/m3u.js";
+import { fromSqliteUtc, toUtcSqlite } from "../ersatztv/time.js";
+import { parseXmltv, XmltvGuide, XmltvProgramme } from "../ersatztv/xmltv.js";
 import {
   pickAudioStreamForLanguage,
   probeAudioStreams,
   probeDurationSeconds,
-} from '../ffmpeg/probe.js';
-import { fromSqliteUtc, toUtcSqlite } from '../ersatztv/time.js';
-import { formatStartsAtLabel } from '../voice/templates.js';
+} from "../ffmpeg/probe.js";
+import { createLogger } from "../util/log.js";
+import {
+  fileExists,
+  findLibraryFile,
+  promoOutputFile,
+  rewritePath,
+} from "../util/paths.js";
+import { formatStartsAtLabel } from "../voice/templates.js";
 
-const log = createLogger('channels');
+const log = createLogger("channels");
 
 export function channelLogoProxyUrl(channelNumber: string): string {
   return `/media/logos/${encodeURIComponent(sanitizeChannelFolderName(channelNumber))}`;
@@ -46,17 +56,30 @@ async function ensureChannelLogo(
   upstreamLogoUrl?: string,
 ): Promise<string | undefined> {
   if (!upstreamLogoUrl?.trim()) return undefined;
+
   const key = sanitizeChannelFolderName(channelNumber);
-  const logoCacheDir = path.join(settings.cachePath, 'logos');
+  const logoCacheDir = path.join(settings.cachePath, "logos");
   const resolved = resolveLogoUrl(upstreamLogoUrl, settings.etvUrl);
   const logoPath = await downloadLogo(resolved, logoCacheDir, key);
   return logoPath ? channelLogoProxyUrl(channelNumber) : undefined;
 }
 
-function matchProgramme(programmes: XmltvProgramme[], channelId: string, start: Date): XmltvProgramme | undefined {
+function matchProgramme(
+  programmes: XmltvProgramme[],
+  channelId: string,
+  start: Date,
+): XmltvProgramme | undefined {
   const t = start.getTime();
-  return programmes.find((p) => p.channelId === channelId && Math.abs(p.start.getTime() - t) < 2000)
-    ?? programmes.find((p) => p.channelId === channelId && Math.abs(p.start.getTime() - t) < 60_000);
+  return (
+    programmes.find(
+      (p) =>
+        p.channelId === channelId && Math.abs(p.start.getTime() - t) < 2000,
+    ) ??
+    programmes.find(
+      (p) =>
+        p.channelId === channelId && Math.abs(p.start.getTime() - t) < 60_000,
+    )
+  );
 }
 
 function resolveItemLabels(
@@ -70,9 +93,13 @@ function resolveItemLabels(
   episodeNumber?: number;
 } {
   const meta: MediaItemMetadata | undefined =
-    getMediaItemMetadata(db, row.mediaItemId) ?? metadataFromFilePath(row.filePath);
+    getMediaItemMetadata(db, row.mediaItemId) ??
+    metadataFromFilePath(row.filePath);
 
-  const title = stripTitleYear(meta?.title || prog?.title || `Item ${row.mediaItemId}`);
+  const title = stripTitleYear(
+    meta?.title || prog?.title || `Item ${row.mediaItemId}`,
+  );
+
   const episodeTitle = meta?.episodeTitle || prog?.episodeTitle;
   const seasonNumber = meta?.seasonNumber ?? prog?.seasonNumber;
   const episodeNumber = meta?.episodeNumber ?? prog?.episodeNumber;
@@ -95,15 +122,20 @@ async function resolveFile(
   options: ResolveOptions = {},
 ): Promise<{ filePath?: string; durationSeconds?: number; error?: string }> {
   const rewritten = row.filePath
-    ? rewritePath(row.filePath, settings.etvPathPrefix, settings.libraryPath || settings.etvPathPrefix)
+    ? rewritePath(
+        row.filePath,
+        settings.etvPathPrefix,
+        settings.libraryPath || settings.etvPathPrefix,
+      )
     : undefined;
+
   let candidate = rewritten && fileExists(rewritten) ? rewritten : undefined;
 
   if (row.filePath) {
     if (candidate) {
-      log.debug('resolved file', { title, db: row.filePath, local: candidate });
+      log.debug("resolved file", { title, db: row.filePath, local: candidate });
     } else {
-      log.warn('rewrite miss', {
+      log.warn("rewrite miss", {
         title,
         db: row.filePath,
         local: rewritten,
@@ -112,34 +144,44 @@ async function resolveFile(
       });
     }
   } else {
-    log.warn('no db path', { title, mediaItemId: row.mediaItemId });
+    log.warn("no db path", { title, mediaItemId: row.mediaItemId });
   }
 
   if (!candidate && options.allowLibraryScan) {
-    log.info('library scan fallback', { title, season, episode, root: settings.libraryPath });
+    log.info("library scan fallback", {
+      title,
+      season,
+      episode,
+      root: settings.libraryPath,
+    });
+
     candidate = findLibraryFile(settings.libraryPath, title, season, episode);
-    if (candidate) log.info('library scan hit', { title, local: candidate });
-    else log.warn('library scan miss', { title, season, episode });
+    if (candidate) log.info("library scan hit", { title, local: candidate });
+    else log.warn("library scan miss", { title, season, episode });
   }
+
   if (!candidate) {
     return {
       error: row.filePath
-        ? `File not found after rewrite: ${row.filePath} → ${rewritten ?? '(no rewrite)'}`
-        : 'No media file path in database',
+        ? `File not found after rewrite: ${row.filePath} → ${rewritten ?? "(no rewrite)"}`
+        : "No media file path in database",
     };
   }
-
   if (row.durationSeconds && row.durationSeconds > 0) {
     return { filePath: candidate, durationSeconds: row.durationSeconds };
   }
   if (!options.allowProbe) {
     return { filePath: candidate, durationSeconds: undefined };
   }
+
   try {
     const durationSeconds = await probeDurationSeconds(candidate);
     return { filePath: candidate, durationSeconds };
   } catch (err) {
-    return { filePath: candidate, error: err instanceof Error ? err.message : String(err) };
+    return {
+      filePath: candidate,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -157,20 +199,26 @@ const VIEWS_TTL_MS = 10_000;
 
 async function loadGuide(settings: AppSettings): Promise<GuideCache> {
   if (guideCache && Date.now() - guideCache.at < GUIDE_TTL_MS) {
-    log.debug('guide cache hit');
+    log.debug("guide cache hit");
     return guideCache;
   }
-  log.info('loading guide from ErsatzTV', { url: settings.etvUrl });
+
+  log.info("loading guide from ErsatzTV", { url: settings.etvUrl });
   const started = Date.now();
   const api = new EtvApiClient(settings.etvUrl, settings.etvApiKey);
   const [m3uText, xmltvText, apiChannels] = await Promise.all([
     api.getM3u(),
     api.getXmltv(),
     api.getChannels().catch((err) => {
-      log.warn('api/channels failed; continuing without languages', String(err));
+      log.warn(
+        "api/channels failed; continuing without languages",
+        String(err),
+      );
+
       return [];
     }),
   ]);
+
   const m3u = parseM3u(m3uText);
   const guide = parseXmltv(xmltvText);
   guideCache = {
@@ -178,14 +226,19 @@ async function loadGuide(settings: AppSettings): Promise<GuideCache> {
     m3u,
     guide,
     languageByNumber: new Map(
-      apiChannels.map((c) => [String(c.number), c.language || c.preferredAudioLanguageCode || '']),
+      apiChannels.map((c) => [
+        String(c.number),
+        c.language || c.preferredAudioLanguageCode || "",
+      ]),
     ),
   };
-  log.info('guide loaded', {
+
+  log.info("guide loaded", {
     ms: Date.now() - started,
     channels: m3u.length,
     programmes: guide.programmes.length,
   });
+
   return guideCache;
 }
 
@@ -196,21 +249,28 @@ function settingsCacheKey(settings: AppSettings): string {
     settings.libraryPath,
     settings.etvPathPrefix,
     settings.outputPath,
-  ].join('|');
+  ].join("|");
 }
 
-export async function loadChannelViews(settings: AppSettings): Promise<ChannelView[]> {
+export async function loadChannelViews(
+  settings: AppSettings,
+): Promise<ChannelView[]> {
   const cacheKey = settingsCacheKey(settings);
-  if (viewsCache && viewsCache.key === cacheKey && Date.now() - viewsCache.at < VIEWS_TTL_MS) {
-    log.debug('channel views cache hit', { channels: viewsCache.views.length });
+  if (
+    viewsCache &&
+    viewsCache.key === cacheKey &&
+    Date.now() - viewsCache.at < VIEWS_TTL_MS
+  ) {
+    log.debug("channel views cache hit", { channels: viewsCache.views.length });
     return viewsCache.views;
   }
 
-  log.info('building channel views', {
+  log.info("building channel views", {
     db: settings.etvDatabase,
     prefix: settings.etvPathPrefix,
     library: settings.libraryPath,
   });
+
   const started = Date.now();
   const { m3u, guide, languageByNumber } = await loadGuide(settings);
   const overrides = loadChannelOverrides();
@@ -218,13 +278,17 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
   let db;
   try {
     db = openDb(settings.etvDatabase, true);
-    log.debug('opened ersatztv db');
+    log.debug("opened ersatztv db");
   } catch (err) {
-    log.error('failed to open ersatztv db', err instanceof Error ? err.message : String(err));
+    log.error(
+      "failed to open ersatztv db",
+      err instanceof Error ? err.message : String(err),
+    );
+
     const views: ChannelView[] = [];
     for (const ch of m3u) {
       const override = overrides[ch.number];
-      const color = override?.color ?? '#1a468d';
+      const color = override?.color ?? "#1a468d";
       const out = promoOutputFile(settings.outputPath, ch.name);
       const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
       views.push({
@@ -232,16 +296,19 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
         name: ch.name,
         tvgId: ch.tvgId,
         logoUrl,
-        language: override?.language || languageByNumber.get(ch.number) || 'en',
+        language: override?.language || languageByNumber.get(ch.number) || "en",
         color,
         colorLocked: Boolean(override?.colorLocked),
         enabled: override?.enabled ?? true,
         nextItems: [],
         promoExists: fileExists(out),
-        promoUrl: fileExists(out) ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4` : undefined,
+        promoUrl: fileExists(out)
+          ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4`
+          : undefined,
         lastError: err instanceof Error ? err.message : String(err),
       });
     }
+
     viewsCache = { at: Date.now(), key: cacheKey, views };
     return views;
   }
@@ -252,24 +319,40 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
 
     for (const ch of m3u) {
       const override = overrides[ch.number] ?? { enabled: true };
-      const language = override.language || languageByNumber.get(ch.number) || 'en';
+      const language =
+        override.language || languageByNumber.get(ch.number) || "en";
+
       let color = override.color;
       let colorLocked = Boolean(override.colorLocked);
 
       // Cache logo for UI proxy; extract color only when we don't already have one.
       const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
       if (logoUrl && !color) {
-        const logoPath = logoCacheFile(settings.cachePath, sanitizeChannelFolderName(ch.number));
+        const logoPath = logoCacheFile(
+          settings.cachePath,
+          sanitizeChannelFolderName(ch.number),
+        );
+
         if (fs.existsSync(logoPath)) {
           color = await extractDominantColor(logoPath);
-          updateChannelOverride(ch.number, { color, colorLocked: false, enabled: override.enabled ?? true });
+          updateChannelOverride(ch.number, {
+            color,
+            colorLocked: false,
+            enabled: override.enabled ?? true,
+          });
         }
       }
-      color = color ?? '#1a468d';
+
+      color = color ?? "#1a468d";
 
       const current = getCurrentPrimaryItem(db, ch.number, toUtcSqlite(now));
       const afterIso = current ? current.finish : toUtcSqlite(now);
-      const nextRows = getPrimaryItemsAfter(db, ch.number, afterIso, settings.promoItemCount ?? 3);
+      const nextRows = getPrimaryItemsAfter(
+        db,
+        ch.number,
+        afterIso,
+        settings.promoItemCount ?? 3,
+      );
 
       const nextItems: ScheduleItemPreview[] = [];
       for (const row of nextRows) {
@@ -288,6 +371,7 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
             allowProbe: false,
           },
         );
+
         nextItems.push({
           mediaItemId: row.mediaItemId,
           title: labels.title,
@@ -322,7 +406,9 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
       const out = promoOutputFile(settings.outputPath, ch.name);
       const leadMs = settings.regenLeadMinutes * 60_000;
       const nextRegenAt = currentItem
-        ? new Date(new Date(currentItem.finish).getTime() - leadMs).toISOString()
+        ? new Date(
+            new Date(currentItem.finish).getTime() - leadMs,
+          ).toISOString()
         : undefined;
 
       views.push({
@@ -338,7 +424,9 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
         currentItem,
         nextRegenAt,
         promoExists: fileExists(out),
-        promoUrl: fileExists(out) ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4` : undefined,
+        promoUrl: fileExists(out)
+          ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4`
+          : undefined,
       });
     }
 
@@ -346,11 +434,13 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
       (n, v) => n + v.nextItems.filter((i) => i.error).length,
       0,
     );
-    log.info('channel views ready', {
+
+    log.info("channel views ready", {
       ms: Date.now() - started,
       channels: views.length,
       nextItemErrors: missingPaths,
     });
+
     viewsCache = { at: Date.now(), key: cacheKey, views };
     return views;
   } finally {
@@ -363,7 +453,10 @@ export function invalidateChannelCaches(): void {
   viewsCache = null;
 }
 
-export type ChapterProgress = (message: string, level?: 'info' | 'warn' | 'error') => void;
+export type ChapterProgress = (
+  message: string,
+  level?: "info" | "warn" | "error",
+) => void;
 
 export async function buildPromoChaptersForChannel(
   settings: AppSettings,
@@ -387,15 +480,16 @@ export async function buildPromoChaptersForChannel(
 }> {
   const progress = onProgress ?? (() => undefined);
   invalidateChannelCaches();
-  log.info('building promo chapters', { channelNumber });
-  progress('Loading guide (M3U / XMLTV)');
+  log.info("building promo chapters", { channelNumber });
+  progress("Loading guide (M3U / XMLTV)");
   const { m3u, guide, languageByNumber } = await loadGuide(settings);
   const channelMeta = m3u.find((c) => c.number === channelNumber);
   if (!channelMeta) throw new Error(`Channel ${channelNumber} not found`);
 
   const overrides = loadChannelOverrides();
   const override = overrides[channelNumber] ?? { enabled: true };
-  if (override.enabled === false) throw new Error(`Channel ${channelNumber} is disabled`);
+  if (override.enabled === false)
+    throw new Error(`Channel ${channelNumber} is disabled`);
 
   progress(`Opening ErsatzTV database for ${channelMeta.name}`);
   const db = openDb(settings.etvDatabase, true);
@@ -407,11 +501,18 @@ export async function buildPromoChaptersForChannel(
     seasonNumber?: number;
     episodeNumber?: number;
   }> = [];
+
   try {
     const now = new Date();
     const current = getCurrentPrimaryItem(db, channelNumber, toUtcSqlite(now));
     const afterIso = current ? current.finish : toUtcSqlite(now);
-    const nextRows = getPrimaryItemsAfter(db, channelNumber, afterIso, settings.promoItemCount ?? 3);
+    const nextRows = getPrimaryItemsAfter(
+      db,
+      channelNumber,
+      afterIso,
+      settings.promoItemCount ?? 3,
+    );
+
     progress(`Found ${nextRows.length} upcoming primary item(s)`);
     labeledRows = nextRows.map((row) => {
       const start = fromSqliteUtc(row.start);
@@ -419,7 +520,8 @@ export async function buildPromoChaptersForChannel(
       const labels = resolveItemLabels(db, row, prog);
       return { row, start, ...labels };
     });
-    log.debug('upcoming playout rows', {
+
+    log.debug("upcoming playout rows", {
       channel: channelMeta.name,
       currentId: current?.mediaItemId,
       next: labeledRows.map((r) => ({
@@ -435,8 +537,8 @@ export async function buildPromoChaptersForChannel(
     db.close();
   }
 
-  const logoCacheDir = path.join(settings.cachePath, 'logos');
-  if (channelMeta.logoUrl) progress('Downloading channel logo');
+  const logoCacheDir = path.join(settings.cachePath, "logos");
+  if (channelMeta.logoUrl) progress("Downloading channel logo");
   const logoPath = channelMeta.logoUrl
     ? await downloadLogo(
         resolveLogoUrl(channelMeta.logoUrl, settings.etvUrl),
@@ -444,34 +546,60 @@ export async function buildPromoChaptersForChannel(
         sanitizeChannelFolderName(channelMeta.number),
       )
     : undefined;
-  const color = override.color
-    ?? (logoPath ? await extractDominantColor(logoPath) : '#1a468d');
-  const language = override.language || languageByNumber.get(channelNumber) || 'en';
+
+  const color =
+    override.color ??
+    (logoPath ? await extractDominantColor(logoPath) : "#1a468d");
+
+  const language =
+    override.language || languageByNumber.get(channelNumber) || "en";
+
   progress(`Using color ${color}, language ${language}`);
 
   const chapters = [];
   for (const item of labeledRows) {
-    const { row, start, title, episodeTitle, seasonNumber, episodeNumber } = item;
+    const { row, start, title, episodeTitle, seasonNumber, episodeNumber } =
+      item;
+
     progress(
       `Resolving media: ${title}` +
-        (seasonNumber != null && episodeNumber != null ? ` S${seasonNumber}E${episodeNumber}` : '') +
-        (episodeTitle ? ` — ${episodeTitle}` : ''),
+        (seasonNumber != null && episodeNumber != null
+          ? ` S${seasonNumber}E${episodeNumber}`
+          : "") +
+        (episodeTitle ? ` — ${episodeTitle}` : ""),
     );
-    const resolved = await resolveFile(settings, row, title, seasonNumber, episodeNumber, {
-      allowLibraryScan: true,
-      allowProbe: true,
-    });
+
+    const resolved = await resolveFile(
+      settings,
+      row,
+      title,
+      seasonNumber,
+      episodeNumber,
+      {
+        allowLibraryScan: true,
+        allowProbe: true,
+      },
+    );
+
     if (!resolved.filePath || !resolved.durationSeconds) {
       progress(
         resolved.error
           ? `Skip ${title}: ${resolved.error}`
           : `Skip ${title}: unresolved path/duration`,
-        'warn',
+        "warn",
       );
+
       continue;
     }
-    progress(`Resolved ${title} → ${resolved.filePath} (${Math.round(resolved.durationSeconds)}s)`);
-    const audioStreams = await probeAudioStreams(resolved.filePath).catch(() => []);
+
+    progress(
+      `Resolved ${title} → ${resolved.filePath} (${Math.round(resolved.durationSeconds)}s)`,
+    );
+
+    const audioStreams = await probeAudioStreams(resolved.filePath).catch(
+      () => [],
+    );
+
     const picked = pickAudioStreamForLanguage(audioStreams, language);
     const hasAudio = audioStreams.length > 0;
     if (hasAudio) {
@@ -481,6 +609,7 @@ export async function buildPromoChaptersForChannel(
           : `Audio track a:${picked?.audioIndex ?? 0} (untagged) for ${title}`,
       );
     }
+
     chapters.push({
       filePath: resolved.filePath,
       durationSeconds: resolved.durationSeconds,
@@ -494,15 +623,22 @@ export async function buildPromoChaptersForChannel(
       startLabel: formatStartsAtLabel(language, start, settings.timeZone),
     });
   }
+
   if (chapters.length === 0) {
-    throw new Error(`No resolvable upcoming items for channel ${channelMeta.name}`);
+    throw new Error(
+      `No resolvable upcoming items for channel ${channelMeta.name}`,
+    );
   }
 
   progress(`Ready with ${chapters.length} chapter source(s)`);
-  log.info('promo chapters ready', {
+  log.info("promo chapters ready", {
     channel: channelMeta.name,
     language,
-    chapters: chapters.map((c) => ({ title: c.title, file: c.filePath, dur: c.durationSeconds })),
+    chapters: chapters.map((c) => ({
+      title: c.title,
+      file: c.filePath,
+      dur: c.durationSeconds,
+    })),
   });
 
   return {
@@ -517,15 +653,17 @@ export async function buildPromoChaptersForChannel(
 export function getFontFile(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.resolve(here, '../../../assets/fonts/NotoSans-Regular.ttf'),
-    path.resolve(process.cwd(), 'assets/fonts/NotoSans-Regular.ttf'),
-    '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    'C:\\Windows\\Fonts\\arial.ttf',
+    path.resolve(here, "../../../assets/fonts/NotoSans-Regular.ttf"),
+    path.resolve(process.cwd(), "assets/fonts/NotoSans-Regular.ttf"),
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
   ];
+
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
+
   return candidates[0]!;
 }
 

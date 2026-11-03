@@ -1,50 +1,52 @@
 export type HardwareAcceleration =
-  | 'None'
-  | 'Nvenc'
-  | 'Qsv'
-  | 'Vaapi'
-  | 'Amf'
-  | 'VideoToolbox';
+  "None" | "Nvenc" | "Qsv" | "Vaapi" | "Amf" | "VideoToolbox";
 
-export type VideoCodec = 'H264' | 'Hevc';
+export type VideoCodec = "H264" | "Hevc";
 
-export type VaapiDriver = 'Default' | 'iHD' | 'i965' | 'RadeonSI' | 'Nouveau';
+export type VaapiDriver = "Default" | "iHD" | "i965" | "RadeonSI" | "Nouveau";
 
 /** Voice-over detail for TV episodes. */
 export const SHOW_VOICE_DETAILS = [
-  'show',
-  'show_episode',
-  'show_season_episode',
-  'show_season_name',
-  'show_season_episode_name',
+  "show",
+  "show_episode",
+  "show_season_episode",
+  "show_season_name",
+  "show_season_episode_name",
 ] as const;
+
 export type ShowVoiceDetail = (typeof SHOW_VOICE_DETAILS)[number];
 
 export const SHOW_VOICE_DETAIL_LABELS: Record<ShowVoiceDetail, string> = {
-  show: 'Show name only',
-  show_episode: 'Show + episode name',
-  show_season_episode: 'Show + season + episode',
-  show_season_name: 'Show + season + episode name',
-  show_season_episode_name: 'Show + season + episode + episode name',
+  show: "Show name only",
+  show_episode: "Show + episode name",
+  show_season_episode: "Show + season + episode",
+  show_season_name: "Show + season + episode name",
+  show_season_episode_name: "Show + season + episode + episode name",
 };
 
 export function isShowVoiceDetail(value: unknown): value is ShowVoiceDetail {
-  return typeof value === 'string' && (SHOW_VOICE_DETAILS as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (SHOW_VOICE_DETAILS as readonly string[]).includes(value)
+  );
 }
 
 /** TTS engine preference. `auto` tries Piper → Edge → Windows SAPI. */
-export const VOICE_PROVIDERS = ['auto', 'piper', 'edge', 'sapi'] as const;
+export const VOICE_PROVIDERS = ["auto", "piper", "edge", "sapi"] as const;
 export type VoiceProvider = (typeof VOICE_PROVIDERS)[number];
 
 export const VOICE_PROVIDER_LABELS: Record<VoiceProvider, string> = {
-  auto: 'Auto (Piper → Edge → SAPI)',
-  piper: 'Piper (Wyoming) only',
-  edge: 'Edge TTS only',
-  sapi: 'Windows SAPI only',
+  auto: "Auto (Piper → Edge → SAPI)",
+  piper: "Piper (Wyoming) only",
+  edge: "Edge TTS only",
+  sapi: "Windows SAPI only",
 };
 
 export function isVoiceProvider(value: unknown): value is VoiceProvider {
-  return typeof value === 'string' && (VOICE_PROVIDERS as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (VOICE_PROVIDERS as readonly string[]).includes(value)
+  );
 }
 
 /** Number of next-items featured in a promo (duration = count × 10s). */
@@ -143,44 +145,46 @@ export interface ScheduleItemPreview {
   error?: string;
 }
 
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'late';
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "late";
 
 /** Languages with voice/overlay templates (canonical codes). */
 export const CHANNEL_LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'es', label: 'Spanish' },
-  { code: 'fr', label: 'French' },
-  { code: 'de', label: 'German' },
-  { code: 'it', label: 'Italian' },
-  { code: 'pt', label: 'Portuguese' },
-  { code: 'nl', label: 'Dutch' },
-  { code: 'pl', label: 'Polish' },
-  { code: 'ru', label: 'Russian' },
-  { code: 'uk', label: 'Ukrainian' },
-  { code: 'ja', label: 'Japanese' },
-  { code: 'zh', label: 'Chinese' },
-  { code: 'ko', label: 'Korean' },
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "nl", label: "Dutch" },
+  { code: "pl", label: "Polish" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "ja", label: "Japanese" },
+  { code: "zh", label: "Chinese" },
+  { code: "ko", label: "Korean" },
 ] as const;
 
-export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]['code'];
+export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]["code"];
 
-export type JobKind = 'generate' | 'push' | 'rollback';
+export type JobKind = "generate" | "push" | "rollback";
 
-export type JobLogLevel = 'info' | 'warn' | 'error';
+export type JobLogLevel = "info" | "warn" | "error";
 
 /** Classic-schedule filler slots we can wire on push. */
-export const FILLER_PLACEMENTS = ['pre', 'middle', 'post', 'tail'] as const;
+export const FILLER_PLACEMENTS = ["pre", "middle", "post", "tail"] as const;
 export type FillerPlacement = (typeof FILLER_PLACEMENTS)[number];
 
 export const FILLER_PLACEMENT_LABELS: Record<FillerPlacement, string> = {
-  pre: 'Pre',
-  middle: 'Middle',
-  post: 'Post',
-  tail: 'Tail',
+  pre: "Pre",
+  middle: "Middle",
+  post: "Post",
+  tail: "Tail",
 };
 
 export function isFillerPlacement(value: unknown): value is FillerPlacement {
-  return typeof value === 'string' && (FILLER_PLACEMENTS as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (FILLER_PLACEMENTS as readonly string[]).includes(value)
+  );
 }
 
 /** Options for Push to ErsatzTV (from the push modal). */
@@ -197,7 +201,9 @@ export interface PushOptions {
 
 export function isPushOptionsActionable(options: PushOptions): boolean {
   return (
-    options.fillerTypes.length > 0 || options.cleanupLegacy || options.cleanupUnselected
+    options.fillerTypes.length > 0 ||
+    options.cleanupLegacy ||
+    options.cleanupUnselected
   );
 }
 
@@ -259,7 +265,7 @@ export interface EtvBackupInfo {
   sourcePath: string;
   path: string;
   bytes: number;
-  reason: 'manual' | 'pre-push';
+  reason: "manual" | "pre-push";
 }
 
 export interface PushResult {
@@ -286,37 +292,37 @@ export interface RollbackResult {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  etvUrl: 'http://localhost:8409',
-  etvApiKey: '',
-  etvDatabase: '',
-  libraryPath: '',
-  etvPathPrefix: '',
-  outputPath: './output',
-  etvLibraryPath: '',
-  cachePath: './cache',
-  configPath: './config',
+  etvUrl: "http://localhost:8409",
+  etvApiKey: "",
+  etvDatabase: "",
+  libraryPath: "",
+  etvPathPrefix: "",
+  outputPath: "./output",
+  etvLibraryPath: "",
+  cachePath: "./cache",
+  configPath: "./config",
   port: 5174,
-  hardwareAcceleration: 'None',
-  vaapiDevice: '/dev/dri/renderD128',
-  vaapiDriver: 'Default',
-  vaapiDisplay: 'drm',
-  videoCodec: 'H264',
+  hardwareAcceleration: "None",
+  vaapiDevice: "/dev/dri/renderD128",
+  vaapiDriver: "Default",
+  vaapiDisplay: "drm",
+  videoCodec: "H264",
   videoBitrate: 4000,
   audioBitrate: 192,
-  resolution: '1920x1080',
-  videoPreset: 'medium',
-  videoProfile: 'high',
+  resolution: "1920x1080",
+  videoPreset: "medium",
+  videoProfile: "high",
   voiceEnabled: true,
   regenLeadMinutes: 3,
-  timeZone: '',
+  timeZone: "",
   lowerThirdFullWidth: false,
   promoItemCount: 3,
-  showVoiceDetail: 'show_season_episode_name',
-  voiceProvider: 'auto',
-  piperUrl: '',
-  piperVoice: '',
+  showVoiceDetail: "show_season_episode_name",
+  voiceProvider: "auto",
+  piperUrl: "",
+  piperVoice: "",
   piperVoiceByLanguage: {},
-  piperSpeaker: '',
+  piperSpeaker: "",
   piperSpeakerByLanguage: {},
   voicePauseMs: 450,
   ttsTimeoutMs: 20_000,
@@ -324,18 +330,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sourceAudioAfterVoice: true,
 };
 
-export function parseResolution(resolution: string): { width: number; height: number } {
+export function parseResolution(resolution: string): {
+  width: number;
+  height: number;
+} {
   const match = /^(\d+)x(\d+)$/i.exec(resolution.trim());
   if (!match) {
     return { width: 1920, height: 1080 };
   }
+
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
 export function sanitizeChannelFolderName(name: string): string {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120) || 'channel';
+  return (
+    name
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120) || "channel"
+  );
 }

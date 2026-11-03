@@ -1,12 +1,17 @@
-import { AppSettings } from '@promo/shared';
-import { openDb, getCurrentPrimaryItem, getUpcomingPlayoutItems, listChannelNumbers } from '../ersatztv/db.js';
-import { fromSqliteUtc, toUtcSqlite } from '../ersatztv/time.js';
-import { fileExists, promoOutputFile } from '../util/paths.js';
-import { createLogger } from '../util/log.js';
-import { loadChannelOverrides } from '../config.js';
-import { JobQueue } from './jobs.js';
+import { AppSettings } from "@promo/shared";
+import { loadChannelOverrides } from "../config.js";
+import {
+  getCurrentPrimaryItem,
+  getUpcomingPlayoutItems,
+  listChannelNumbers,
+  openDb,
+} from "../ersatztv/db.js";
+import { fromSqliteUtc, toUtcSqlite } from "../ersatztv/time.js";
+import { createLogger } from "../util/log.js";
+import { fileExists, promoOutputFile } from "../util/paths.js";
+import { JobQueue } from "./jobs.js";
 
-const log = createLogger('scheduler');
+const log = createLogger("scheduler");
 
 export class RegenScheduler {
   private timer?: NodeJS.Timeout;
@@ -20,7 +25,7 @@ export class RegenScheduler {
   }
 
   start(): void {
-    log.info('scheduler started', { intervalMs: 60_000 });
+    log.info("scheduler started", { intervalMs: 60_000 });
     void this.tick();
     this.timer = setInterval(() => void this.tick(), 60_000);
   }
@@ -31,9 +36,10 @@ export class RegenScheduler {
 
   async tick(): Promise<void> {
     if (this.running) {
-      log.debug('scheduler tick skipped (already running)');
+      log.debug("scheduler tick skipped (already running)");
       return;
     }
+
     this.running = true;
     const started = Date.now();
     let enqueued = 0;
@@ -45,7 +51,11 @@ export class RegenScheduler {
       try {
         db = openDb(settings.etvDatabase, true);
       } catch (err) {
-        log.warn('scheduler could not open db', err instanceof Error ? err.message : String(err));
+        log.warn(
+          "scheduler could not open db",
+          err instanceof Error ? err.message : String(err),
+        );
+
         return;
       }
 
@@ -54,7 +64,10 @@ export class RegenScheduler {
         const leadMs = settings.regenLeadMinutes * 60_000;
         const overrides = loadChannelOverrides();
         const channels = listChannelNumbers(db);
-        log.debug('scheduler scanning channels', { count: channels.length, leadMinutes: settings.regenLeadMinutes });
+        log.debug("scheduler scanning channels", {
+          count: channels.length,
+          leadMinutes: settings.regenLeadMinutes,
+        });
 
         for (const channel of channels) {
           if (overrides[channel.number]?.enabled === false) continue;
@@ -62,8 +75,17 @@ export class RegenScheduler {
           const promoPath = promoOutputFile(settings.outputPath, channel.name);
           const missing = !fileExists(promoPath);
 
-          const windowStart = toUtcSqlite(new Date(now.getTime() - 6 * 3600_000));
-          const nearby = getUpcomingPlayoutItems(db, channel.number, windowStart, 40);
+          const windowStart = toUtcSqlite(
+            new Date(now.getTime() - 6 * 3600_000),
+          );
+
+          const nearby = getUpcomingPlayoutItems(
+            db,
+            channel.number,
+            windowStart,
+            40,
+          );
+
           const currentAny = nearby.find((row) => {
             const start = fromSqliteUtc(row.start).getTime();
             const finish = fromSqliteUtc(row.finish).getTime();
@@ -74,20 +96,28 @@ export class RegenScheduler {
             continue;
           }
 
-          const current = getCurrentPrimaryItem(db, channel.number, toUtcSqlite(now));
+          const current = getCurrentPrimaryItem(
+            db,
+            channel.number,
+            toUtcSqlite(now),
+          );
+
           if (!current) {
             if (missing) {
-              log.info('scheduler enqueue (missing promo, no current item)', {
+              log.info("scheduler enqueue (missing promo, no current item)", {
                 channel: channel.name,
                 number: channel.number,
               });
+
               this.jobs.enqueue({
                 channelNumber: channel.number,
                 channelName: channel.name,
                 preferFront: true,
               });
+
               enqueued += 1;
             }
+
             continue;
           }
 
@@ -96,7 +126,7 @@ export class RegenScheduler {
           const itemShort = finish.getTime() - now.getTime() < leadMs;
 
           if (missing || itemShort || deadline.getTime() <= now.getTime()) {
-            log.info('scheduler enqueue', {
+            log.info("scheduler enqueue", {
               channel: channel.name,
               number: channel.number,
               missing,
@@ -104,12 +134,14 @@ export class RegenScheduler {
               deadline: deadline.toISOString(),
               finish: finish.toISOString(),
             });
+
             this.jobs.enqueue({
               channelNumber: channel.number,
               channelName: channel.name,
               deadline,
               preferFront: missing || itemShort,
             });
+
             enqueued += 1;
           }
         }
@@ -117,7 +149,7 @@ export class RegenScheduler {
         db.close();
       }
     } finally {
-      log.debug('scheduler tick done', { ms: Date.now() - started, enqueued });
+      log.debug("scheduler tick done", { ms: Date.now() - started, enqueued });
       this.running = false;
     }
   }

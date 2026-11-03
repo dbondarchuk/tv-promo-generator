@@ -14,10 +14,20 @@
     "build": "npm run build -w @promo/shared && npm run build -w server && npm run build -w client",
     "start": "npm run start -w server",
     "test": "npm run test -w server",
-    "typecheck": "npm run typecheck -w @promo/shared && npm run typecheck -w server && npm run typecheck -w client"
+    "typecheck": "npm run typecheck -w @promo/shared && npm run typecheck -w server && npm run typecheck -w client",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,md}\""
   },
   "devDependencies": {
+    "@typescript-eslint/parser": "^8.26.0",
     "concurrently": "^9.1.2",
+    "eslint": "^9.34.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.2.5",
+    "prettier-plugin-organize-imports": "^4.2.0",
     "typescript": "^5.8.2"
   },
   "engines": {

@@ -131,6 +131,22 @@ button.secondary { background: var(--panel-2); border: 1px solid var(--border); 
 button.success { background: var(--accent-2); color: white; }
 button.danger { background: var(--danger); }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+a.button {
+  display: inline-block;
+  background: var(--accent);
+  color: white;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+.setup-needed {
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.setup-needed h1 { margin: 0; }
+.setup-needed p { margin: 0; }
 
 .channel-card {
   background: var(--panel);
@@ -347,3 +363,4 @@ section {
 .checkbox-row.start {
   align-items: flex-start;
 }
+.flex-1 { flex: 1; }

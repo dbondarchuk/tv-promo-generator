@@ -1,8 +1,12 @@
-import sharp from 'sharp';
-import fs from 'node:fs';
-import path from 'node:path';
+import fs from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
 
-function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+function rgbToHsl(
+  r: number,
+  g: number,
+  b: number,
+): { h: number; s: number; l: number } {
   r /= 255;
   g /= 255;
   b /= 255;
@@ -10,6 +14,7 @@ function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: n
   const min = Math.min(r, g, b);
   const l = (max + min) / 2;
   if (max === min) return { h: 0, s: 0, l };
+
   const d = max - min;
   const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
   let h = 0;
@@ -23,22 +28,30 @@ function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: n
     default:
       h = ((r - g) / d + 4) / 6;
   }
+
   return { h, s, l };
 }
 
-function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+function hslToRgb(
+  h: number,
+  s: number,
+  l: number,
+): { r: number; g: number; b: number } {
   if (s === 0) {
     const v = Math.round(l * 255);
     return { r: v, g: v, b: v };
   }
+
   const hue2rgb = (p: number, q: number, t: number) => {
     if (t < 0) t += 1;
     if (t > 1) t -= 1;
     if (t < 1 / 6) return p + (q - p) * 6 * t;
     if (t < 1 / 2) return q;
     if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+
     return p;
   };
+
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   return {
@@ -49,13 +62,24 @@ function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: n
 }
 
 function toHex(r: number, g: number, b: number): string {
-  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export async function extractDominantColor(imagePathOrBuffer: string | Buffer): Promise<string> {
-  const image = sharp(imagePathOrBuffer).resize(64, 64, { fit: 'inside' }).removeAlpha();
-  const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
-  const buckets = new Map<string, { count: number; r: number; g: number; b: number; score: number }>();
+export async function extractDominantColor(
+  imagePathOrBuffer: string | Buffer,
+): Promise<string> {
+  const image = sharp(imagePathOrBuffer)
+    .resize(64, 64, { fit: "inside" })
+    .removeAlpha();
+
+  const { data, info } = await image
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const buckets = new Map<
+    string,
+    { count: number; r: number; g: number; b: number; score: number }
+  >();
 
   for (let i = 0; i < data.length; i += info.channels) {
     const r = data[i]!;
@@ -64,6 +88,7 @@ export async function extractDominantColor(imagePathOrBuffer: string | Buffer): 
     const { h, s, l } = rgbToHsl(r, g, b);
     if (l > 0.88 || l < 0.12) continue;
     if (s < 0.18) continue;
+
     const key = `${Math.round(h * 24)}_${Math.round(s * 8)}_${Math.round(l * 8)}`;
     const score = s * (1 - Math.abs(l - 0.45));
     const existing = buckets.get(key);
@@ -80,13 +105,19 @@ export async function extractDominantColor(imagePathOrBuffer: string | Buffer): 
 
   let best = [...buckets.values()].sort((a, b) => b.score - a.score)[0];
   if (!best) {
-    return '#1a468d';
+    return "#1a468d";
   }
+
   const r = Math.round(best.r / best.count);
   const g = Math.round(best.g / best.count);
   const b = Math.round(best.b / best.count);
   const hsl = rgbToHsl(r, g, b);
-  const darkened = hslToRgb(hsl.h, Math.min(1, hsl.s * 1.05), Math.min(0.42, hsl.l * 0.75));
+  const darkened = hslToRgb(
+    hsl.h,
+    Math.min(1, hsl.s * 1.05),
+    Math.min(0.42, hsl.l * 0.75),
+  );
+
   return toHex(darkened.r, darkened.g, darkened.b);
 }
 
@@ -94,19 +125,27 @@ export async function extractDominantColor(imagePathOrBuffer: string | Buffer): 
 export function resolveLogoUrl(logoUrl: string, etvBaseUrl: string): string {
   const trimmed = logoUrl.trim();
   if (!trimmed) return trimmed;
+
   try {
-    const base = etvBaseUrl.endsWith('/') ? etvBaseUrl : `${etvBaseUrl}/`;
+    const base = etvBaseUrl.endsWith("/") ? etvBaseUrl : `${etvBaseUrl}/`;
     return new URL(trimmed, base).href;
   } catch {
     return trimmed;
   }
 }
 
-export function logoCacheFile(cachePath: string, channelNumber: string): string {
-  return path.join(cachePath, 'logos', `${channelNumber}.png`);
+export function logoCacheFile(
+  cachePath: string,
+  channelNumber: string,
+): string {
+  return path.join(cachePath, "logos", `${channelNumber}.png`);
 }
 
-export async function downloadLogo(url: string, destDir: string, key: string): Promise<string | undefined> {
+export async function downloadLogo(
+  url: string,
+  destDir: string,
+  key: string,
+): Promise<string | undefined> {
   try {
     fs.mkdirSync(destDir, { recursive: true });
     const dest = path.join(destDir, `${key}.png`);
@@ -117,6 +156,7 @@ export async function downloadLogo(url: string, destDir: string, key: string): P
     try {
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) return undefined;
+
       const buf = Buffer.from(await res.arrayBuffer());
       await sharp(buf).png().toFile(dest);
       return dest;
@@ -134,7 +174,7 @@ export async function createLowerThirdBar(
   colorHex: string,
   destPath: string,
 ): Promise<string> {
-  const hex = colorHex.replace('#', '');
+  const hex = colorHex.replace("#", "");
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
   const b = parseInt(hex.slice(4, 6), 16);
@@ -150,7 +190,11 @@ export async function createLowerThirdBar(
       raw[i + 3] = alpha;
     }
   }
+
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  await sharp(raw, { raw: { width, height, channels: 4 } }).png().toFile(destPath);
+  await sharp(raw, { raw: { width, height, channels: 4 } })
+    .png()
+    .toFile(destPath);
+
   return destPath;
 }

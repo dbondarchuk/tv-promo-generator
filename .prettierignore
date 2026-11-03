@@ -1,0 +1,12 @@
+# Ignore artifacts:
+*.generated.ts
+build
+coverage
+node_modules
+dist
+cache
+output
+config
+tools
+*.tsbuildinfo
+package-lock.json

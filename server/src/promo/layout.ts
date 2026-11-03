@@ -12,8 +12,9 @@ export interface PromoTiming {
 }
 
 export function clampPromoItemCount(value: unknown): LayoutItemCount {
-  const n = typeof value === 'number' ? value : Number(value);
+  const n = typeof value === "number" ? value : Number(value);
   if (n === 1 || n === 2 || n === 3) return n;
+
   return 3;
 }
 
@@ -26,11 +27,13 @@ export function getPromoTiming(itemCount: unknown): PromoTiming {
     preFreezeSeconds.push(i === 0 ? 0 : i * PHASE_SECONDS - TRANSITION_SECONDS);
   }
 
+  // Keep playing through the outgoing transition; freeze only once the panel
+  // has finished morphing (incoming still starts at transition begin).
   const playSeconds: number[] = [];
   for (let i = 0; i < count; i++) {
     const pre = preFreezeSeconds[i]!;
-    const nextPre = i + 1 < count ? preFreezeSeconds[i + 1]! : totalSeconds;
-    playSeconds.push(nextPre - pre);
+    const playEnd = i + 1 < count ? (i + 1) * PHASE_SECONDS : totalSeconds;
+    playSeconds.push(playEnd - pre);
   }
 
   return { itemCount: count, totalSeconds, playSeconds, preFreezeSeconds };
@@ -61,7 +64,11 @@ export interface PanelGeom {
   frameW: number;
 }
 
-export function panelGeom(frameW: number, frameH: number, itemCount: LayoutItemCount = 3): PanelGeom {
+export function panelGeom(
+  frameW: number,
+  frameH: number,
+  itemCount: LayoutItemCount = 3,
+): PanelGeom {
   const width75 = Math.floor((frameW * 3) / 4);
   const width50 = Math.floor(frameW / 2);
   // Exact complement so 75+25 fills the frame for 2-item layouts.
@@ -72,7 +79,7 @@ export function panelGeom(frameW: number, frameH: number, itemCount: LayoutItemC
 
 /** Escape commas for ffmpeg filter expressions inside a filtergraph. */
 export function escapeExpr(expr: string): string {
-  return expr.replace(/,/g, '\\,');
+  return expr.replace(/,/g, "\\,");
 }
 
 /**
@@ -85,7 +92,10 @@ function smoothProgress(t0: number, t1: number): string {
   return `(${p})*(${p})*(3-2*(${p}))`;
 }
 
-function transitionWindow(afterPhaseIndex: number): { start: number; end: number } {
+function transitionWindow(afterPhaseIndex: number): {
+  start: number;
+  end: number;
+} {
   const end = (afterPhaseIndex + 1) * PHASE_SECONDS;
   return { start: end - TRANSITION_SECONDS, end };
 }
@@ -158,19 +168,30 @@ export function widthExprTwoB(g: PanelGeom): string {
 }
 
 /** Per-panel width expression for the active item count. */
-export function panelWidthExpr(g: PanelGeom, itemCount: LayoutItemCount, panelIndex: number): string {
+export function panelWidthExpr(
+  g: PanelGeom,
+  itemCount: LayoutItemCount,
+  panelIndex: number,
+): string {
   if (itemCount === 1) return String(g.frameW);
-  if (itemCount === 2) return panelIndex === 0 ? widthExprTwoA(g) : widthExprTwoB(g);
+  if (itemCount === 2)
+    return panelIndex === 0 ? widthExprTwoA(g) : widthExprTwoB(g);
   if (panelIndex === 0) return widthExprA(g);
   if (panelIndex === 1) return widthExprB(g);
+
   return widthExprC(g);
 }
 
 /** Per-panel overlay X for the active item count. */
-export function panelXExpr(g: PanelGeom, itemCount: LayoutItemCount, panelIndex: number): string {
-  if (panelIndex === 0) return '0';
+export function panelXExpr(
+  g: PanelGeom,
+  itemCount: LayoutItemCount,
+  panelIndex: number,
+): string {
+  if (panelIndex === 0) return "0";
   if (itemCount === 2) return widthExprTwoA(g);
   if (panelIndex === 1) return xExprB(g);
+
   return xExprC(g);
 }
 
@@ -202,9 +223,14 @@ export function barXExprTwo(g: PanelGeom, margin: number): string {
   );
 }
 
-export function barXExprForCount(g: PanelGeom, itemCount: LayoutItemCount, margin: number): string {
+export function barXExprForCount(
+  g: PanelGeom,
+  itemCount: LayoutItemCount,
+  margin: number,
+): string {
   if (itemCount === 1) return barXFixed(margin);
   if (itemCount === 2) return barXExprTwo(g, margin);
+
   return barXExpr(g, margin);
 }
 
@@ -227,5 +253,6 @@ export function barPixelWidth(
   if (itemCount === 2) {
     return Math.max(1, g.width75 - margin - 8);
   }
+
   return Math.max(1, g.width50 - margin - 8);
 }

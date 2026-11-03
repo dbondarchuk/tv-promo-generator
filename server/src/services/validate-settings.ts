@@ -1,34 +1,45 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   AppSettings,
   SettingsCheck,
   ValidateSettingsResult,
   isPromoItemCount,
   parseResolution,
-} from '@promo/shared';
-import { EtvApiClient } from '../ersatztv/api.js';
-import { loadSchema, openDb, resetSchemaCache } from '../ersatztv/db.js';
-import { resolveFfmpegBinaries } from '../ffmpeg/binaries.js';
-import { createLogger } from '../util/log.js';
+} from "@promo/shared";
+import fs from "node:fs";
+import path from "node:path";
+import { EtvApiClient } from "../ersatztv/api.js";
+import { loadSchema, openDb, resetSchemaCache } from "../ersatztv/db.js";
+import { resolveFfmpegBinaries } from "../ffmpeg/binaries.js";
+import { createLogger } from "../util/log.js";
 
-const log = createLogger('validate');
+const log = createLogger("validate");
 
-function check(id: string, label: string, ok: boolean, message: string): SettingsCheck {
+function check(
+  id: string,
+  label: string,
+  ok: boolean,
+  message: string,
+): SettingsCheck {
   return { id, label, ok, message };
 }
 
-function dirStatus(dir: string, label: string, createHint: boolean): SettingsCheck {
+function dirStatus(
+  dir: string,
+  label: string,
+  createHint: boolean,
+): SettingsCheck {
   const id = label;
-  const resolved = path.resolve(dir || '');
+  const resolved = path.resolve(dir || "");
   if (!dir?.trim()) {
-    return check(id, label, false, 'Path is empty');
+    return check(id, label, false, "Path is empty");
   }
+
   if (fs.existsSync(resolved)) {
     const st = fs.statSync(resolved);
     if (!st.isDirectory()) {
       return check(id, label, false, `Not a directory: ${resolved}`);
     }
+
     try {
       fs.accessSync(resolved, fs.constants.R_OK | fs.constants.W_OK);
       return check(id, label, true, resolved);
@@ -36,51 +47,88 @@ function dirStatus(dir: string, label: string, createHint: boolean): SettingsChe
       return check(id, label, false, `Not writable: ${resolved}`);
     }
   }
+
   if (createHint) {
     return check(id, label, true, `Will be created: ${resolved}`);
   }
+
   return check(id, label, false, `Missing: ${resolved}`);
 }
 
-export async function validateSettings(settings: AppSettings): Promise<ValidateSettingsResult> {
+export async function validateSettings(
+  settings: AppSettings,
+): Promise<ValidateSettingsResult> {
   const checks: SettingsCheck[] = [];
 
   try {
     const url = new URL(settings.etvUrl);
-    if (!['http:', 'https:'].includes(url.protocol)) {
-      checks.push(check('etvUrl', 'ErsatzTV URL', false, `Unsupported protocol: ${url.protocol}`));
+    if (!["http:", "https:"].includes(url.protocol)) {
+      checks.push(
+        check(
+          "etvUrl",
+          "ErsatzTV URL",
+          false,
+          `Unsupported protocol: ${url.protocol}`,
+        ),
+      );
     } else {
-      checks.push(check('etvUrl', 'ErsatzTV URL', true, url.toString()));
+      checks.push(check("etvUrl", "ErsatzTV URL", true, url.toString()));
     }
   } catch {
-    checks.push(check('etvUrl', 'ErsatzTV URL', false, 'Invalid URL'));
+    checks.push(check("etvUrl", "ErsatzTV URL", false, "Invalid URL"));
   }
 
   checks.push(
     settings.etvApiKey.trim()
-      ? check('etvApiKey', 'API key', true, 'Set')
-      : check('etvApiKey', 'API key', true, 'Empty — OK if ErsatzTV auth is disabled'),
+      ? check("etvApiKey", "API key", true, "Set")
+      : check(
+          "etvApiKey",
+          "API key",
+          true,
+          "Empty — OK if ErsatzTV auth is disabled",
+        ),
   );
 
   const dbPath = settings.etvDatabase?.trim();
   if (!dbPath) {
-    checks.push(check('etvDatabase', 'Database path', false, 'Not configured'));
+    checks.push(check("etvDatabase", "Database path", false, "Not configured"));
   } else if (!fs.existsSync(dbPath)) {
-    checks.push(check('etvDatabase', 'Database path', false, `File not found: ${dbPath}`));
+    checks.push(
+      check("etvDatabase", "Database path", false, `File not found: ${dbPath}`),
+    );
   } else {
     try {
       resetSchemaCache();
       const db = openDb(dbPath, true);
       try {
         const schema = loadSchema(db);
-        const required = ['Channel', 'Playout', 'ProgramScheduleItem', 'FillerPreset', 'Library'];
+        const required = [
+          "Channel",
+          "Playout",
+          "ProgramScheduleItem",
+          "FillerPreset",
+          "Library",
+        ];
+
         const missing = required.filter((t) => !schema.tables.has(t));
         if (missing.length) {
           checks.push(
-            check('etvDatabase', 'Database path', false, `Missing tables: ${missing.join(', ')}`),
+            check(
+              "etvDatabase",
+              "Database path",
+              false,
+              `Missing tables: ${missing.join(", ")}`,
+            ),
           );
         } else {
-          checks.push(check('etvDatabase', 'Database path', true, `Readable SQLite (${dbPath})`));
+          checks.push(
+            check(
+              "etvDatabase",
+              "Database path",
+              true,
+              `Readable SQLite (${dbPath})`,
+            ),
+          );
         }
       } finally {
         db.close();
@@ -88,8 +136,8 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     } catch (err) {
       checks.push(
         check(
-          'etvDatabase',
-          'Database path',
+          "etvDatabase",
+          "Database path",
           false,
           err instanceof Error ? err.message : String(err),
         ),
@@ -97,39 +145,52 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     }
   }
 
-  checks.push(dirStatus(settings.libraryPath, 'Library path', false));
-  checks.push(dirStatus(settings.outputPath, 'Output path', true));
-  checks.push(dirStatus(settings.cachePath, 'Cache path', true));
-  checks.push(dirStatus(settings.etvLibraryPath || settings.outputPath, 'ETV library path', true));
+  checks.push(dirStatus(settings.libraryPath, "Library path", false));
+  checks.push(dirStatus(settings.outputPath, "Output path", true));
+  checks.push(dirStatus(settings.cachePath, "Cache path", true));
+  checks.push(
+    dirStatus(
+      settings.etvLibraryPath || settings.outputPath,
+      "ETV library path",
+      true,
+    ),
+  );
 
   if (settings.etvPathPrefix && !settings.libraryPath) {
     checks.push(
       check(
-        'etvPathPrefix',
-        'Path rewrite',
+        "etvPathPrefix",
+        "Path rewrite",
         false,
-        'etvPathPrefix is set but libraryPath is empty',
+        "etvPathPrefix is set but libraryPath is empty",
       ),
     );
   } else if (settings.etvPathPrefix) {
     checks.push(
       check(
-        'etvPathPrefix',
-        'Path rewrite',
+        "etvPathPrefix",
+        "Path rewrite",
         true,
         `${settings.etvPathPrefix} → ${settings.libraryPath}`,
       ),
     );
   } else {
-    checks.push(check('etvPathPrefix', 'Path rewrite', true, 'Not set (paths used as-is)'));
+    checks.push(
+      check(
+        "etvPathPrefix",
+        "Path rewrite",
+        true,
+        "Not set (paths used as-is)",
+      ),
+    );
   }
 
   const res = parseResolution(settings.resolution);
   const resOk = /^\d+x\d+$/i.test(settings.resolution.trim());
   checks.push(
     check(
-      'resolution',
-      'Resolution',
+      "resolution",
+      "Resolution",
       resOk,
       resOk ? `${res.width}x${res.height}` : `Invalid "${settings.resolution}"`,
     ),
@@ -140,76 +201,89 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     settings.videoBitrate > 0 &&
     Number.isFinite(settings.audioBitrate) &&
     settings.audioBitrate > 0;
+
   checks.push(
     check(
-      'bitrate',
-      'Bitrates',
+      "bitrate",
+      "Bitrates",
       bitrateOk,
       bitrateOk
         ? `video ${settings.videoBitrate} / audio ${settings.audioBitrate} kbps`
-        : 'videoBitrate and audioBitrate must be positive',
+        : "videoBitrate and audioBitrate must be positive",
     ),
   );
 
   const portOk =
-    Number.isInteger(settings.port) && settings.port >= 1 && settings.port <= 65535;
+    Number.isInteger(settings.port) &&
+    settings.port >= 1 &&
+    settings.port <= 65535;
+
   checks.push(
-    check('port', 'HTTP port', portOk, portOk ? String(settings.port) : 'Must be 1–65535'),
+    check(
+      "port",
+      "HTTP port",
+      portOk,
+      portOk ? String(settings.port) : "Must be 1–65535",
+    ),
   );
 
   const leadOk =
-    Number.isFinite(settings.regenLeadMinutes) && settings.regenLeadMinutes >= 0;
+    Number.isFinite(settings.regenLeadMinutes) &&
+    settings.regenLeadMinutes >= 0;
+
   checks.push(
     check(
-      'regenLeadMinutes',
-      'Regen lead',
+      "regenLeadMinutes",
+      "Regen lead",
       leadOk,
-      leadOk ? `${settings.regenLeadMinutes} min` : 'Must be ≥ 0',
+      leadOk ? `${settings.regenLeadMinutes} min` : "Must be ≥ 0",
     ),
   );
 
   checks.push(
     check(
-      'voiceProvider',
-      'Voice provider',
+      "voiceProvider",
+      "Voice provider",
       true,
       settings.voiceEnabled
-        ? `${settings.voiceProvider}${settings.piperUrl.trim() ? ` · Piper ${settings.piperUrl.trim()}` : ''}`
-        : 'Voice-over disabled',
+        ? `${settings.voiceProvider}${settings.piperUrl.trim() ? ` · Piper ${settings.piperUrl.trim()}` : ""}`
+        : "Voice-over disabled",
     ),
   );
 
   const pauseOk =
     Number.isFinite(settings.voicePauseMs) && settings.voicePauseMs >= 0;
+
   checks.push(
     check(
-      'voicePauseMs',
-      'Voice pause',
+      "voicePauseMs",
+      "Voice pause",
       pauseOk,
-      pauseOk ? `${settings.voicePauseMs} ms` : 'Must be ≥ 0',
+      pauseOk ? `${settings.voicePauseMs} ms` : "Must be ≥ 0",
     ),
   );
 
   const timeoutOk =
     Number.isFinite(settings.ttsTimeoutMs) && settings.ttsTimeoutMs >= 1000;
+
   checks.push(
     check(
-      'ttsTimeoutMs',
-      'TTS timeout',
+      "ttsTimeoutMs",
+      "TTS timeout",
       timeoutOk,
-      timeoutOk ? `${settings.ttsTimeoutMs} ms` : 'Must be ≥ 1000',
+      timeoutOk ? `${settings.ttsTimeoutMs} ms` : "Must be ≥ 1000",
     ),
   );
 
   const itemCountOk = isPromoItemCount(settings.promoItemCount);
   checks.push(
     check(
-      'promoItemCount',
-      'Promo items',
+      "promoItemCount",
+      "Promo items",
       itemCountOk,
       itemCountOk
         ? `${settings.promoItemCount} → ${settings.promoItemCount * 10}s`
-        : 'Must be 1, 2, or 3',
+        : "Must be 1, 2, or 3",
     ),
   );
 
@@ -217,68 +291,82 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     Number.isFinite(settings.sourceAudioVolume) &&
     settings.sourceAudioVolume >= 0 &&
     settings.sourceAudioVolume <= 100;
+
   checks.push(
     check(
-      'sourceAudioVolume',
-      'Original item audio',
+      "sourceAudioVolume",
+      "Original item audio",
       sourceVolOk,
       sourceVolOk
         ? settings.sourceAudioVolume <= 0
-          ? 'Skipped (0)'
+          ? "Skipped (0)"
           : `${Math.round(settings.sourceAudioVolume)}%` +
-            (settings.sourceAudioAfterVoice ? ' · after VO' : ' · under VO')
-        : 'Must be 0–100',
+            (settings.sourceAudioAfterVoice ? " · after VO" : " · under VO")
+        : "Must be 0–100",
     ),
   );
 
-  if (settings.voiceEnabled && settings.voiceProvider === 'piper') {
+  if (settings.voiceEnabled && settings.voiceProvider === "piper") {
     const piperOk = Boolean(settings.piperUrl.trim());
     checks.push(
       check(
-        'piperUrl',
-        'Piper URL',
+        "piperUrl",
+        "Piper URL",
         piperOk,
-        piperOk ? settings.piperUrl.trim() : 'Required when voice provider is Piper',
+        piperOk
+          ? settings.piperUrl.trim()
+          : "Required when voice provider is Piper",
       ),
     );
   } else if (settings.piperUrl.trim()) {
     try {
       const url = new URL(settings.piperUrl.trim());
-      checks.push(
-        check('piperUrl', 'Piper URL', true, url.toString()),
-      );
+      checks.push(check("piperUrl", "Piper URL", true, url.toString()));
     } catch {
-      checks.push(check('piperUrl', 'Piper URL', false, 'Invalid URL'));
+      checks.push(check("piperUrl", "Piper URL", false, "Invalid URL"));
     }
   }
 
-  if (settings.voiceEnabled && settings.voiceProvider === 'sapi' && process.platform !== 'win32') {
+  if (
+    settings.voiceEnabled &&
+    settings.voiceProvider === "sapi" &&
+    process.platform !== "win32"
+  ) {
     checks.push(
-      check('voiceProvider', 'Windows SAPI', false, 'SAPI is only available on Windows'),
+      check(
+        "voiceProvider",
+        "Windows SAPI",
+        false,
+        "SAPI is only available on Windows",
+      ),
     );
   }
 
   try {
     const bins = resolveFfmpegBinaries();
-    const { spawnSync } = await import('node:child_process');
-    const ff = spawnSync(bins.ffmpeg, ['-version'], {
+    const { spawnSync } = await import("node:child_process");
+    const ff = spawnSync(bins.ffmpeg, ["-version"], {
       windowsHide: true,
-      encoding: 'utf8',
+      encoding: "utf8",
       timeout: 5000,
     });
-    const fp = spawnSync(bins.ffprobe, ['-version'], {
+
+    const fp = spawnSync(bins.ffprobe, ["-version"], {
       windowsHide: true,
-      encoding: 'utf8',
+      encoding: "utf8",
       timeout: 5000,
     });
+
     if (ff.status === 0 && fp.status === 0) {
-      const ver = (ff.stdout || '').split('\n')[0]?.trim() || bins.ffmpeg;
-      checks.push(check('ffmpeg', 'ffmpeg / ffprobe', true, `${ver} (${bins.source})`));
+      const ver = (ff.stdout || "").split("\n")[0]?.trim() || bins.ffmpeg;
+      checks.push(
+        check("ffmpeg", "ffmpeg / ffprobe", true, `${ver} (${bins.source})`),
+      );
     } else {
       checks.push(
         check(
-          'ffmpeg',
-          'ffmpeg / ffprobe',
+          "ffmpeg",
+          "ffmpeg / ffprobe",
           false,
           `Not runnable (ffmpeg=${bins.ffmpeg}, ffprobe=${bins.ffprobe})`,
         ),
@@ -286,18 +374,23 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     }
   } catch (err) {
     checks.push(
-      check('ffmpeg', 'ffmpeg / ffprobe', false, err instanceof Error ? err.message : String(err)),
+      check(
+        "ffmpeg",
+        "ffmpeg / ffprobe",
+        false,
+        err instanceof Error ? err.message : String(err),
+      ),
     );
   }
 
-  if (checks.find((c) => c.id === 'etvUrl')?.ok) {
+  if (checks.find((c) => c.id === "etvUrl")?.ok) {
     try {
       const api = new EtvApiClient(settings.etvUrl, settings.etvApiKey, 8_000);
       const channels = await api.getChannels();
       checks.push(
         check(
-          'etvReachable',
-          'ErsatzTV API',
+          "etvReachable",
+          "ErsatzTV API",
           true,
           `Reachable — ${channels.length} channel(s)`,
         ),
@@ -305,18 +398,24 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
     } catch (err) {
       checks.push(
         check(
-          'etvReachable',
-          'ErsatzTV API',
+          "etvReachable",
+          "ErsatzTV API",
           false,
           err instanceof Error ? err.message : String(err),
         ),
       );
     }
   } else {
-    checks.push(check('etvReachable', 'ErsatzTV API', false, 'Skipped — invalid URL'));
+    checks.push(
+      check("etvReachable", "ErsatzTV API", false, "Skipped — invalid URL"),
+    );
   }
 
   const ok = checks.every((c) => c.ok);
-  log.info('settings validated', { ok, failed: checks.filter((c) => !c.ok).map((c) => c.id) });
+  log.info("settings validated", {
+    ok,
+    failed: checks.filter((c) => !c.ok).map((c) => c.id),
+  });
+
   return { ok, checks };
 }

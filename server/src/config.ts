@@ -1,23 +1,17 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   AppSettings,
-  CHANNEL_LANGUAGES,
   ChannelOverrides,
   DEFAULT_SETTINGS,
-  HardwareAcceleration,
   isPromoItemCount,
   isShowVoiceDetail,
   isVoiceProvider,
-  ShowVoiceDetail,
-  VaapiDriver,
-  VideoCodec,
-  VoiceProvider,
-} from '@promo/shared';
-import { loadEnv } from './env.js';
+} from "@promo/shared";
+import fs from "node:fs";
+import path from "node:path";
+import { loadEnv } from "./env.js";
 
-const SETTINGS_FILE = 'settings.json';
-const CHANNELS_FILE = 'channels.json';
+const SETTINGS_FILE = "settings.json";
+const CHANNELS_FILE = "channels.json";
 
 /** Older settings.json fields before piperVoiceByLanguage. */
 type LegacyVoiceFields = {
@@ -29,232 +23,298 @@ loadEnv();
 
 function env(name: string): string | undefined {
   const value = process.env[name];
-  return value && value.trim() !== '' ? value.trim() : undefined;
+  return value && value.trim() !== "" ? value.trim() : undefined;
 }
 
 function envInt(name: string): number | undefined {
   const value = env(name);
   if (!value) return undefined;
+
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
-}
-
-function envBool(name: string): boolean | undefined {
-  const value = env(name);
-  if (!value) return undefined;
-  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/** Prefer UI/file value, then env bootstrap, then default. */
-function pick<T>(fileVal: T | undefined, envVal: T | undefined, fallback: T): T {
-  return fileVal !== undefined ? fileVal : envVal !== undefined ? envVal : fallback;
-}
-
 function cleanLangMap(raw: unknown): Record<string, string> {
-  if (!raw || typeof raw !== 'object') return {};
+  if (!raw || typeof raw !== "object") return {};
+
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const code = key.trim().toLowerCase();
-    if (!code || typeof value !== 'string') continue;
+    if (!code || typeof value !== "string") continue;
+
     const trimmed = value.trim();
     if (trimmed) out[code] = trimmed;
   }
+
   return out;
 }
 
-/** Env map for PIPER_VOICE_<LANG>, then file map (and legacy en/uk fields) wins. */
-function resolvePiperVoiceByLanguage(fromFile: Partial<AppSettings> & LegacyVoiceFields): Record<string, string> {
-  const fromEnv: Record<string, string> = {};
-  for (const lang of CHANNEL_LANGUAGES) {
-    const value = env(`PIPER_VOICE_${lang.code.toUpperCase()}`);
-    if (value) fromEnv[lang.code] = value;
-  }
-
+function resolvePiperVoiceByLanguage(
+  fromFile: Partial<AppSettings> & LegacyVoiceFields,
+): Record<string, string> {
   const fromLegacy: Record<string, string> = {};
-  if (fromFile.piperVoiceEn?.trim()) fromLegacy.en = fromFile.piperVoiceEn.trim();
-  if (fromFile.piperVoiceUk?.trim()) fromLegacy.uk = fromFile.piperVoiceUk.trim();
+  if (fromFile.piperVoiceEn?.trim())
+    fromLegacy.en = fromFile.piperVoiceEn.trim();
 
-  const fromMap = cleanLangMap(fromFile.piperVoiceByLanguage);
+  if (fromFile.piperVoiceUk?.trim())
+    fromLegacy.uk = fromFile.piperVoiceUk.trim();
 
-  // defaults < env < legacy file fields < file map
-  return { ...fromEnv, ...fromLegacy, ...fromMap };
+  return { ...fromLegacy, ...cleanLangMap(fromFile.piperVoiceByLanguage) };
 }
 
-/** Env map for PIPER_SPEAKER_<LANG>, then file map wins. */
-function resolvePiperSpeakerByLanguage(fromFile: Partial<AppSettings>): Record<string, string> {
-  const fromEnv: Record<string, string> = {};
-  for (const lang of CHANNEL_LANGUAGES) {
-    const value = env(`PIPER_SPEAKER_${lang.code.toUpperCase()}`);
-    if (value) fromEnv[lang.code] = value;
-  }
-  return { ...fromEnv, ...cleanLangMap(fromFile.piperSpeakerByLanguage) };
+function resolvePiperSpeakerByLanguage(
+  fromFile: Partial<AppSettings>,
+): Record<string, string> {
+  return cleanLangMap(fromFile.piperSpeakerByLanguage);
 }
 
 export function resolveConfigPath(): string {
-  return path.resolve(env('CONFIG_PATH') ?? DEFAULT_SETTINGS.configPath);
+  return path.resolve(env("CONFIG_PATH") ?? DEFAULT_SETTINGS.configPath);
 }
 
-export function loadSettings(): AppSettings {
-  const configPath = resolveConfigPath();
-  ensureDir(configPath);
-  const filePath = path.join(configPath, SETTINGS_FILE);
-  let fromFile: Partial<AppSettings> & LegacyVoiceFields = {};
-  if (fs.existsSync(filePath)) {
-    try {
-      fromFile = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<AppSettings> & LegacyVoiceFields;
-    } catch {
-      fromFile = {};
-    }
+function settingsFilePath(): string {
+  return path.join(resolveConfigPath(), SETTINGS_FILE);
+}
+
+/** Infra / process settings — always from env (not the Settings UI). */
+function infraFromEnv(): Pick<
+  AppSettings,
+  "port" | "cachePath" | "configPath"
+> {
+  return {
+    configPath: resolveConfigPath(),
+    port: envInt("PORT") ?? DEFAULT_SETTINGS.port,
+    cachePath: path.resolve(env("CACHE_PATH") ?? DEFAULT_SETTINGS.cachePath),
+  };
+}
+
+/**
+ * One-time seed helpers: if an old .env still has app keys when settings.json is
+ * first created, copy them in so upgrades don't lose config. After the file exists,
+ * only the UI/file values are used (except infra + TIME_ZONE fallback).
+ */
+function bootstrapAppFromEnv(): Partial<AppSettings> {
+  const out: Partial<AppSettings> = {};
+  const str = (key: keyof AppSettings, envName: string) => {
+    const v = env(envName);
+    if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+  };
+
+  const num = (key: keyof AppSettings, envName: string) => {
+    const v = envInt(envName);
+    if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+  };
+
+  str("etvUrl", "ETV_URL");
+  str("etvApiKey", "ETV_API_KEY");
+  str("etvDatabase", "ETV_DATABASE");
+  str("libraryPath", "LIBRARY_PATH");
+  str("etvPathPrefix", "ETV_PATH_PREFIX");
+  str("outputPath", "OUTPUT_PATH");
+  str("etvLibraryPath", "ETV_LIBRARY_PATH");
+  str("hardwareAcceleration", "HARDWARE_ACCELERATION");
+  str("vaapiDevice", "VAAPI_DEVICE");
+  str("vaapiDriver", "VAAPI_DRIVER");
+  str("vaapiDisplay", "VAAPI_DISPLAY");
+  str("videoCodec", "VIDEO_CODEC");
+  num("videoBitrate", "VIDEO_BITRATE");
+  num("audioBitrate", "AUDIO_BITRATE");
+  str("resolution", "RESOLUTION");
+  str("videoPreset", "VIDEO_PRESET");
+  str("videoProfile", "VIDEO_PROFILE");
+  str("piperUrl", "PIPER_URL");
+  if (!out.piperUrl) str("piperUrl", "WYOMING_PIPER_URL");
+  str("piperVoice", "PIPER_VOICE");
+  str("piperSpeaker", "PIPER_SPEAKER");
+  num("voicePauseMs", "VOICE_PAUSE_MS");
+  num("ttsTimeoutMs", "TTS_TIMEOUT_MS");
+  num("regenLeadMinutes", "REGEN_LEAD_MINUTES");
+  num("sourceAudioVolume", "SOURCE_AUDIO_VOLUME");
+  str("timeZone", "TIME_ZONE");
+  if (!out.timeZone) str("timeZone", "TZ");
+
+  const voiceEnabled = env("VOICE_ENABLED");
+  if (voiceEnabled !== undefined) {
+    out.voiceEnabled = ["1", "true", "yes", "on"].includes(
+      voiceEnabled.toLowerCase(),
+    );
   }
 
-  // Precedence: defaults < env (Docker bootstrap) < settings.json (UI).
-  // CONFIG_PATH is infrastructure and always comes from the environment.
+  const afterVoice = env("SOURCE_AUDIO_AFTER_VOICE");
+  if (afterVoice !== undefined) {
+    out.sourceAudioAfterVoice = ["1", "true", "yes", "on"].includes(
+      afterVoice.toLowerCase(),
+    );
+  }
+
+  const fullWidth = env("LOWER_THIRD_FULL_WIDTH");
+  if (fullWidth !== undefined) {
+    out.lowerThirdFullWidth = ["1", "true", "yes", "on"].includes(
+      fullWidth.toLowerCase(),
+    );
+  }
+
+  const itemCount = envInt("PROMO_ITEM_COUNT");
+  if (isPromoItemCount(itemCount)) out.promoItemCount = itemCount;
+  const showDetail = env("SHOW_VOICE_DETAIL");
+  if (isShowVoiceDetail(showDetail)) out.showVoiceDetail = showDetail;
+  const provider = env("VOICE_PROVIDER");
+  if (isVoiceProvider(provider)) out.voiceProvider = provider;
+
+  return out;
+}
+
+function normalizeSettings(
+  fromFile: Partial<AppSettings> & LegacyVoiceFields,
+): AppSettings {
+  const infra = infraFromEnv();
+  const fileTimeZone =
+    typeof fromFile.timeZone === "string" ? fromFile.timeZone.trim() : "";
+
+  const timeZone =
+    fileTimeZone || env("TIME_ZONE") || env("TZ") || DEFAULT_SETTINGS.timeZone;
+
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
-    configPath,
-    etvUrl: pick(fromFile.etvUrl, env('ETV_URL'), DEFAULT_SETTINGS.etvUrl),
-    etvApiKey: pick(fromFile.etvApiKey, env('ETV_API_KEY'), DEFAULT_SETTINGS.etvApiKey),
-    etvDatabase: pick(fromFile.etvDatabase, env('ETV_DATABASE'), DEFAULT_SETTINGS.etvDatabase),
-    libraryPath: pick(fromFile.libraryPath, env('LIBRARY_PATH'), DEFAULT_SETTINGS.libraryPath),
-    etvPathPrefix: pick(fromFile.etvPathPrefix, env('ETV_PATH_PREFIX'), DEFAULT_SETTINGS.etvPathPrefix),
-    outputPath: path.resolve(
-      pick(fromFile.outputPath, env('OUTPUT_PATH'), DEFAULT_SETTINGS.outputPath),
-    ),
-    etvLibraryPath: pick(fromFile.etvLibraryPath, env('ETV_LIBRARY_PATH'), DEFAULT_SETTINGS.etvLibraryPath),
-    cachePath: path.resolve(
-      pick(fromFile.cachePath, env('CACHE_PATH'), DEFAULT_SETTINGS.cachePath),
-    ),
-    port: pick(fromFile.port, envInt('PORT'), DEFAULT_SETTINGS.port),
-    hardwareAcceleration: pick(
-      fromFile.hardwareAcceleration,
-      env('HARDWARE_ACCELERATION') as HardwareAcceleration | undefined,
-      DEFAULT_SETTINGS.hardwareAcceleration,
-    ),
-    vaapiDevice: pick(fromFile.vaapiDevice, env('VAAPI_DEVICE'), DEFAULT_SETTINGS.vaapiDevice),
-    vaapiDriver: pick(
-      fromFile.vaapiDriver,
-      env('VAAPI_DRIVER') as VaapiDriver | undefined,
-      DEFAULT_SETTINGS.vaapiDriver,
-    ),
-    vaapiDisplay: pick(fromFile.vaapiDisplay, env('VAAPI_DISPLAY'), DEFAULT_SETTINGS.vaapiDisplay),
-    videoCodec: pick(
-      fromFile.videoCodec,
-      env('VIDEO_CODEC') as VideoCodec | undefined,
-      DEFAULT_SETTINGS.videoCodec,
-    ),
-    videoBitrate: pick(fromFile.videoBitrate, envInt('VIDEO_BITRATE'), DEFAULT_SETTINGS.videoBitrate),
-    audioBitrate: pick(fromFile.audioBitrate, envInt('AUDIO_BITRATE'), DEFAULT_SETTINGS.audioBitrate),
-    resolution: pick(fromFile.resolution, env('RESOLUTION'), DEFAULT_SETTINGS.resolution),
-    videoPreset: pick(fromFile.videoPreset, env('VIDEO_PRESET'), DEFAULT_SETTINGS.videoPreset),
-    videoProfile: pick(fromFile.videoProfile, env('VIDEO_PROFILE'), DEFAULT_SETTINGS.videoProfile),
-    voiceEnabled: pick(fromFile.voiceEnabled, envBool('VOICE_ENABLED'), DEFAULT_SETTINGS.voiceEnabled),
-    regenLeadMinutes: pick(
-      fromFile.regenLeadMinutes,
-      envInt('REGEN_LEAD_MINUTES'),
-      DEFAULT_SETTINGS.regenLeadMinutes,
-    ),
-    timeZone: pick(fromFile.timeZone, env('TIME_ZONE') ?? env('TZ'), DEFAULT_SETTINGS.timeZone),
-    lowerThirdFullWidth: pick(
-      fromFile.lowerThirdFullWidth,
-      envBool('LOWER_THIRD_FULL_WIDTH'),
-      DEFAULT_SETTINGS.lowerThirdFullWidth,
-    ),
-    promoItemCount: pick(
-      isPromoItemCount(fromFile.promoItemCount) ? fromFile.promoItemCount : undefined,
-      (() => {
-        const raw = envInt('PROMO_ITEM_COUNT');
-        return isPromoItemCount(raw) ? raw : undefined;
-      })(),
-      DEFAULT_SETTINGS.promoItemCount,
-    ),
-    showVoiceDetail: pick(
-      isShowVoiceDetail(fromFile.showVoiceDetail) ? fromFile.showVoiceDetail : undefined,
-      (() => {
-        const raw = env('SHOW_VOICE_DETAIL');
-        return isShowVoiceDetail(raw) ? (raw as ShowVoiceDetail) : undefined;
-      })(),
-      DEFAULT_SETTINGS.showVoiceDetail,
-    ),
-    voiceProvider: pick(
-      isVoiceProvider(fromFile.voiceProvider) ? fromFile.voiceProvider : undefined,
-      (() => {
-        const raw = env('VOICE_PROVIDER');
-        return isVoiceProvider(raw) ? (raw as VoiceProvider) : undefined;
-      })(),
-      DEFAULT_SETTINGS.voiceProvider,
-    ),
-    piperUrl: pick(
-      fromFile.piperUrl,
-      env('PIPER_URL') ?? env('WYOMING_PIPER_URL'),
-      DEFAULT_SETTINGS.piperUrl,
-    ),
-    piperVoice: pick(fromFile.piperVoice, env('PIPER_VOICE'), DEFAULT_SETTINGS.piperVoice),
+    ...fromFile,
+    ...infra,
+    timeZone,
     piperVoiceByLanguage: resolvePiperVoiceByLanguage(fromFile),
-    piperSpeaker: pick(fromFile.piperSpeaker, env('PIPER_SPEAKER'), DEFAULT_SETTINGS.piperSpeaker),
     piperSpeakerByLanguage: resolvePiperSpeakerByLanguage(fromFile),
-    voicePauseMs: pick(fromFile.voicePauseMs, envInt('VOICE_PAUSE_MS'), DEFAULT_SETTINGS.voicePauseMs),
-    ttsTimeoutMs: pick(fromFile.ttsTimeoutMs, envInt('TTS_TIMEOUT_MS'), DEFAULT_SETTINGS.ttsTimeoutMs),
-    sourceAudioVolume: pick(
-      fromFile.sourceAudioVolume,
-      envInt('SOURCE_AUDIO_VOLUME'),
-      DEFAULT_SETTINGS.sourceAudioVolume,
-    ),
-    sourceAudioAfterVoice: pick(
-      fromFile.sourceAudioAfterVoice,
-      envBool('SOURCE_AUDIO_AFTER_VOICE'),
-      DEFAULT_SETTINGS.sourceAudioAfterVoice,
+    outputPath: path.resolve(
+      fromFile.outputPath || DEFAULT_SETTINGS.outputPath,
     ),
   };
+
+  if (!isPromoItemCount(merged.promoItemCount)) {
+    merged.promoItemCount = DEFAULT_SETTINGS.promoItemCount;
+  }
+
+  if (!isShowVoiceDetail(merged.showVoiceDetail)) {
+    merged.showVoiceDetail = DEFAULT_SETTINGS.showVoiceDetail;
+  }
+
+  if (!isVoiceProvider(merged.voiceProvider)) {
+    merged.voiceProvider = DEFAULT_SETTINGS.voiceProvider;
+  }
 
   if (!Number.isFinite(merged.sourceAudioVolume)) {
     merged.sourceAudioVolume = DEFAULT_SETTINGS.sourceAudioVolume;
   } else {
-    merged.sourceAudioVolume = Math.max(0, Math.min(100, Math.round(merged.sourceAudioVolume)));
+    merged.sourceAudioVolume = Math.max(
+      0,
+      Math.min(100, Math.round(merged.sourceAudioVolume)),
+    );
   }
 
-  if (!merged.etvLibraryPath) {
+  if (!merged.etvLibraryPath?.trim()) {
     merged.etvLibraryPath = merged.outputPath;
   }
 
+  return merged;
+}
+
+/** Write settings.json (app fields only; infra always re-applied on load). */
+function writeSettingsFile(settings: AppSettings): void {
+  const configPath = resolveConfigPath();
+  ensureDir(configPath);
+  const {
+    port: _port,
+    cachePath: _cachePath,
+    configPath: _configPath,
+    ...appFields
+  } = settings;
+
+  const toStore = {
+    ...appFields,
+    outputPath: path.resolve(settings.outputPath),
+    sourceAudioVolume: Number.isFinite(settings.sourceAudioVolume)
+      ? Math.max(0, Math.min(100, Math.round(settings.sourceAudioVolume)))
+      : DEFAULT_SETTINGS.sourceAudioVolume,
+  };
+
+  fs.writeFileSync(
+    path.join(configPath, SETTINGS_FILE),
+    JSON.stringify(toStore, null, 2),
+    "utf8",
+  );
+}
+
+function ensureSettingsFile(): Partial<AppSettings> & LegacyVoiceFields {
+  const configPath = resolveConfigPath();
+  ensureDir(configPath);
+  const filePath = settingsFilePath();
+  if (fs.existsSync(filePath)) {
+    try {
+      return JSON.parse(
+        fs.readFileSync(filePath, "utf8"),
+      ) as Partial<AppSettings> & LegacyVoiceFields;
+    } catch {
+      // Corrupt file — fall through and rewrite from defaults.
+    }
+  }
+
+  const seeded = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    ...bootstrapAppFromEnv(),
+  });
+
+  writeSettingsFile(seeded);
+  return seeded;
+}
+
+/** True when enough ErsatzTV / path settings exist to run the app. */
+export function isAppConfigured(settings: AppSettings): boolean {
+  return Boolean(
+    settings.etvUrl?.trim() &&
+    settings.etvDatabase?.trim() &&
+    settings.libraryPath?.trim() &&
+    settings.outputPath?.trim(),
+  );
+}
+
+export function loadSettings(): AppSettings {
+  const fromFile = ensureSettingsFile();
+  const merged = normalizeSettings(fromFile);
   ensureDir(merged.outputPath);
   ensureDir(merged.cachePath);
   return merged;
 }
 
 export function saveSettings(settings: AppSettings): AppSettings {
-  const configPath = resolveConfigPath();
-  ensureDir(configPath);
-  const sourceAudioVolume = Number.isFinite(settings.sourceAudioVolume)
-    ? Math.max(0, Math.min(100, Math.round(settings.sourceAudioVolume)))
-    : DEFAULT_SETTINGS.sourceAudioVolume;
-  const toStore: AppSettings = {
+  const infra = infraFromEnv();
+  const normalized = normalizeSettings({
     ...settings,
-    sourceAudioVolume,
-    configPath,
-    outputPath: path.resolve(settings.outputPath),
-    cachePath: path.resolve(settings.cachePath),
-  };
-  fs.writeFileSync(path.join(configPath, SETTINGS_FILE), JSON.stringify(toStore, null, 2), 'utf8');
-  ensureDir(toStore.outputPath);
-  ensureDir(toStore.cachePath);
+    ...infra,
+  });
+
+  writeSettingsFile(normalized);
+  ensureDir(normalized.outputPath);
+  ensureDir(normalized.cachePath);
   return loadSettings();
 }
 
-/** Delete UI-persisted settings so the next load uses env → defaults. */
+/** Reset settings.json to built-in defaults (plus one-time env bootstrap). */
 export function clearSavedSettings(): AppSettings {
-  const filePath = path.join(resolveConfigPath(), SETTINGS_FILE);
+  const filePath = settingsFilePath();
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
+
   return loadSettings();
 }
 
+export function hasSettingsFile(): boolean {
+  return fs.existsSync(settingsFilePath());
+}
+
+/** @deprecated Use hasSettingsFile — settings.json is always created on load. */
 export function hasSavedSettings(): boolean {
-  return fs.existsSync(path.join(resolveConfigPath(), SETTINGS_FILE));
+  return hasSettingsFile();
 }
 
 export function loadChannelOverrides(): ChannelOverrides {
@@ -262,17 +322,25 @@ export function loadChannelOverrides(): ChannelOverrides {
   ensureDir(configPath);
   const filePath = path.join(configPath, CHANNELS_FILE);
   if (!fs.existsSync(filePath)) return {};
+
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as ChannelOverrides;
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as ChannelOverrides;
   } catch {
     return {};
   }
 }
 
-export function saveChannelOverrides(overrides: ChannelOverrides): ChannelOverrides {
+export function saveChannelOverrides(
+  overrides: ChannelOverrides,
+): ChannelOverrides {
   const configPath = resolveConfigPath();
   ensureDir(configPath);
-  fs.writeFileSync(path.join(configPath, CHANNELS_FILE), JSON.stringify(overrides, null, 2), 'utf8');
+  fs.writeFileSync(
+    path.join(configPath, CHANNELS_FILE),
+    JSON.stringify(overrides, null, 2),
+    "utf8",
+  );
+
   return overrides;
 }
 
@@ -286,5 +354,6 @@ export function updateChannelOverride(
     ...patch,
     enabled: patch.enabled ?? overrides[channelNumber]?.enabled ?? true,
   };
+
   return saveChannelOverrides(overrides);
 }

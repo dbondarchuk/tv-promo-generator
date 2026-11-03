@@ -1,50 +1,31 @@
+# Production: pull the published image from GHCR.
+# For a local image build, use: docker compose -f docker-compose.build.yml up -d --build
 services:
   promo-generator:
-    # Local build (default). To pull from GHCR instead:
-    #   image: ghcr.io/<owner>/tv-promo-generator:latest
-    #   # build: .
-    build: .
-    image: tv-promo-generator:latest
+    image: ghcr.io/dbondarchuk/tv-promo-generator:latest
     ports:
       - "5174:5174"
     environment:
-      ETV_URL: http://ersatztv:8409
-      ETV_API_KEY: ${ETV_API_KEY:-}
-      ETV_DATABASE: /etv-config/ersatztv.sqlite3
-      LIBRARY_PATH: /library
-      ETV_PATH_PREFIX: /media
-      OUTPUT_PATH: /data/output
-      ETV_LIBRARY_PATH: /promos
+      PORT: "5174"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       CACHE_PATH: /data/cache
       CONFIG_PATH: /data/config
-      # Prefer None (CPU) or Vaapi (Intel/AMD with /dev/dri). Qsv needs working oneVPL/MFX.
-      HARDWARE_ACCELERATION: ${HARDWARE_ACCELERATION:-None}
-      VAAPI_DEVICE: ${VAAPI_DEVICE:-/dev/dri/renderD128}
-      VOICE_ENABLED: ${VOICE_ENABLED:-true}
-      REGEN_LEAD_MINUTES: "3"
-      # Wyoming Piper (TCP). Host machine IP/hostname — not localhost from inside the container.
-      PIPER_URL: ${PIPER_URL:-http://192.168.0.151:10200}
-      PIPER_VOICE_EN: ${PIPER_VOICE_EN:-en_GB-alba-medium}
-      PIPER_VOICE_UK: ${PIPER_VOICE_UK:-uk_UA-lada-x_low}
-      # PIPER_VOICE: ${PIPER_VOICE:-}
-      # PIPER_SPEAKER: ${PIPER_SPEAKER:-}
-      VOICE_PAUSE_MS: ${VOICE_PAUSE_MS:-450}
-      TTS_TIMEOUT_MS: ${TTS_TIMEOUT_MS:-20000}
-      # IANA zone for overlay/VO start times (container is UTC without this)
+      # Fallback when Settings → timezone is empty
       TIME_ZONE: ${TIME_ZONE:-America/New_York}
       # Optional for Intel VAAPI:
       # LIBVA_DRIVER_NAME: iHD
     volumes:
-      # Media library as seen by this app (read-only)
+      # Host media library → container /library (Settings → Library path = /library)
       - ${MEDIA_PATH:-./media}:/library:ro
-      # Promo output — mount the same host folder into ErsatzTV as ETV_LIBRARY_PATH
+      # Promo files written here; mount the same host folder into ErsatzTV
       - ${PROMO_PATH:-./output}:/data/output
+      # Same files as ErsatzTV sees them (Settings → ErsatzTV library path = /promos)
       - ${PROMO_PATH:-./output}:/promos
       - ${CONFIG_PATH:-./config}:/data/config
       - ${CACHE_PATH:-./cache}:/data/cache
-      # ErsatzTV config (read-write for Push)
+      # ErsatzTV config (Settings → ersatztv.sqlite3 path = /etv-config/ersatztv.sqlite3)
       - ${ETV_CONFIG_PATH:-./etv-config}:/etv-config
-    # Required for Vaapi/Qsv (Intel/AMD). Leave commented for CPU-only.
+    # Vaapi / Qsv (Intel/AMD) — uncomment when using hardware encode:
     # devices:
     #   - /dev/dri:/dev/dri
     # group_add:

@@ -1,9 +1,9 @@
-import net from 'node:net';
-import fs from 'node:fs';
-import path from 'node:path';
-import { createLogger } from '../util/log.js';
+import fs from "node:fs";
+import net from "node:net";
+import path from "node:path";
+import { createLogger } from "../util/log.js";
 
-const log = createLogger('wyoming');
+const log = createLogger("wyoming");
 
 export interface WyomingVoice {
   name: string;
@@ -26,8 +26,11 @@ interface ParsedEvent {
   payload?: Buffer;
 }
 
-function parseHostPort(urlOrHost: string, defaultPort = 10200): { host: string; port: number } {
-  const raw = urlOrHost.trim().replace(/\/+$/, '');
+function parseHostPort(
+  urlOrHost: string,
+  defaultPort = 10200,
+): { host: string; port: number } {
+  const raw = urlOrHost.trim().replace(/\/+$/, "");
   try {
     if (/^https?:\/\//i.test(raw)) {
       const u = new URL(raw);
@@ -36,8 +39,12 @@ function parseHostPort(urlOrHost: string, defaultPort = 10200): { host: string; 
   } catch {
     // fall through
   }
-  const [host, portStr] = raw.split(':');
-  return { host: host || '127.0.0.1', port: portStr ? Number(portStr) : defaultPort };
+
+  const [host, portStr] = raw.split(":");
+  return {
+    host: host || "127.0.0.1",
+    port: portStr ? Number(portStr) : defaultPort,
+  };
 }
 
 function sendEvent(
@@ -46,12 +53,13 @@ function sendEvent(
   data: Record<string, unknown> = {},
   payload?: Buffer,
 ): void {
-  const dataJson = Buffer.from(JSON.stringify(data), 'utf8');
+  const dataJson = Buffer.from(JSON.stringify(data), "utf8");
   const header: Record<string, unknown> = {
     type,
     data_length: dataJson.length,
     payload_length: payload?.length ?? null,
   };
+
   socket.write(`${JSON.stringify(header)}\n`);
   if (dataJson.length > 0) socket.write(dataJson);
   if (payload && payload.length > 0) socket.write(payload);
@@ -61,7 +69,11 @@ class WyomingReader {
   private buffer = Buffer.alloc(0);
   private waitingData = 0;
   private waitingPayload = 0;
-  private header: { type: string; dataLength: number; payloadLength: number } | null = null;
+  private header: {
+    type: string;
+    dataLength: number;
+    payloadLength: number;
+  } | null = null;
   private dataBuf = Buffer.alloc(0);
   private readonly queue: ParsedEvent[] = [];
   private waiters: Array<() => void> = [];
@@ -85,16 +97,19 @@ class WyomingReader {
     while (true) {
       if (this.header && this.waitingData > 0) {
         if (this.buffer.length < this.waitingData) return;
+
         this.dataBuf = this.buffer.subarray(0, this.waitingData);
         this.buffer = this.buffer.subarray(this.waitingData);
         this.waitingData = 0;
         if (this.waitingPayload > 0) continue;
+
         this.finishEvent();
         continue;
       }
 
       if (this.header && this.waitingPayload > 0) {
         if (this.buffer.length < this.waitingPayload) return;
+
         const payload = this.buffer.subarray(0, this.waitingPayload);
         this.buffer = this.buffer.subarray(this.waitingPayload);
         this.waitingPayload = 0;
@@ -104,17 +119,20 @@ class WyomingReader {
 
       const nl = this.buffer.indexOf(0x0a);
       if (nl < 0) return;
-      const line = this.buffer.subarray(0, nl).toString('utf8').trim();
+
+      const line = this.buffer.subarray(0, nl).toString("utf8").trim();
       this.buffer = this.buffer.subarray(nl + 1);
       if (!line) continue;
+
       let header: Record<string, unknown>;
       try {
         header = JSON.parse(line) as Record<string, unknown>;
       } catch {
-        log.warn('wyoming bad header line', line.slice(0, 120));
+        log.warn("wyoming bad header line", line.slice(0, 120));
         continue;
       }
-      const type = String(header.type ?? '');
+
+      const type = String(header.type ?? "");
       const dataLength = Number(header.data_length ?? 0) || 0;
       const payloadLength = Number(header.payload_length ?? 0) || 0;
       this.header = { type, dataLength, payloadLength };
@@ -129,14 +147,19 @@ class WyomingReader {
 
   private finishEvent(payload?: Buffer): void {
     if (!this.header) return;
+
     let data: Record<string, unknown> = {};
     if (this.dataBuf.length > 0) {
       try {
-        data = JSON.parse(this.dataBuf.toString('utf8')) as Record<string, unknown>;
+        data = JSON.parse(this.dataBuf.toString("utf8")) as Record<
+          string,
+          unknown
+        >;
       } catch {
         data = {};
       }
     }
+
     const evt = { type: this.header.type, data, payload };
     this.header = null;
     this.enqueue(evt);
@@ -144,32 +167,45 @@ class WyomingReader {
 
   async next(timeoutMs: number): Promise<ParsedEvent> {
     if (this.queue.length > 0) return this.queue.shift()!;
+
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters = this.waiters.filter((w) => w !== resolve);
-        reject(new Error(`Wyoming timed out after ${timeoutMs}ms waiting for event`));
+        reject(
+          new Error(`Wyoming timed out after ${timeoutMs}ms waiting for event`),
+        );
       }, timeoutMs);
+
       const wrapped = () => {
         clearTimeout(timer);
         resolve();
       };
+
       this.waiters.push(wrapped);
     });
+
     if (this.queue.length === 0) {
-      throw new Error('Wyoming event queue empty after wake');
+      throw new Error("Wyoming event queue empty after wake");
     }
+
     return this.queue.shift()!;
   }
 }
 
-function writeWav(filePath: string, pcm: Buffer, rate: number, width: number, channels: number): void {
+function writeWav(
+  filePath: string,
+  pcm: Buffer,
+  rate: number,
+  width: number,
+  channels: number,
+): void {
   const blockAlign = channels * width;
   const byteRate = rate * blockAlign;
   const header = Buffer.alloc(44);
-  header.write('RIFF', 0);
+  header.write("RIFF", 0);
   header.writeUInt32LE(36 + pcm.length, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20); // PCM
   header.writeUInt16LE(channels, 22);
@@ -177,7 +213,7 @@ function writeWav(filePath: string, pcm: Buffer, rate: number, width: number, ch
   header.writeUInt32LE(byteRate, 28);
   header.writeUInt16LE(blockAlign, 32);
   header.writeUInt16LE(width * 8, 34);
-  header.write('data', 36);
+  header.write("data", 36);
   header.writeUInt32LE(pcm.length, 40);
   fs.writeFileSync(filePath, Buffer.concat([header, pcm]));
 }
@@ -190,14 +226,15 @@ export function pickPiperVoice(
   if (preferred && voices.some((v) => v.name === preferred)) return preferred;
   if (preferred) return preferred; // allow explicit override even if describe is stale
 
-  const lang = language.trim().toLowerCase().replace('_', '-');
-  const base = lang.split('-')[0] ?? 'en';
+  const lang = language.trim().toLowerCase().replace("_", "-");
+  const base = lang.split("-")[0] ?? "en";
   const candidates = voices.filter((v) =>
     (v.languages ?? []).some((l) => {
-      const ll = l.toLowerCase().replace('_', '-');
+      const ll = l.toLowerCase().replace("_", "-");
       return ll === lang || ll.startsWith(`${base}-`) || ll === base;
     }),
   );
+
   if (candidates.length === 0) return undefined;
 
   const score = (name: string): number => {
@@ -206,8 +243,15 @@ export function pickPiperVoice(
     else if (/-medium$/.test(name)) s += 20;
     else if (/-low$/.test(name)) s += 10;
     else if (/-x_low$/.test(name)) s += 5;
+
     // Prefer male promo-ish voices when available.
-    if (/oleksa|mykyta|ryan|lessac|joe|john|alan|thorsten|dmitri|denis|ruslan/.test(name)) s += 5;
+    if (
+      /oleksa|mykyta|ryan|lessac|joe|john|alan|thorsten|dmitri|denis|ruslan/.test(
+        name,
+      )
+    )
+      s += 5;
+
     return s;
   };
 
@@ -220,15 +264,19 @@ export async function listWyomingVoices(
 ): Promise<WyomingVoice[]> {
   const { host, port } = parseHostPort(urlOrHost);
   return await withSocket(host, port, timeoutMs, async (socket, reader) => {
-    sendEvent(socket, 'describe');
+    sendEvent(socket, "describe");
     while (true) {
       const evt = await reader.next(timeoutMs);
-      if (evt.type === 'info') {
-        const tts = (evt.data.tts as Array<{ voices?: WyomingVoice[] }> | undefined) ?? [];
+      if (evt.type === "info") {
+        const tts =
+          (evt.data.tts as Array<{ voices?: WyomingVoice[] }> | undefined) ??
+          [];
+
         return tts.flatMap((t) => t.voices ?? []);
       }
-      if (evt.type === 'error') {
-        throw new Error(String(evt.data.message ?? 'Wyoming describe failed'));
+
+      if (evt.type === "error") {
+        throw new Error(String(evt.data.message ?? "Wyoming describe failed"));
       }
     }
   });
@@ -255,7 +303,8 @@ export async function synthesizeWyoming(
       if (opts.language) voice.language = opts.language;
       data.voice = voice;
     }
-    sendEvent(socket, 'synthesize', data);
+
+    sendEvent(socket, "synthesize", data);
 
     const chunks: Buffer[] = [];
     let rate = 22050;
@@ -264,31 +313,35 @@ export async function synthesizeWyoming(
 
     while (true) {
       const evt = await reader.next(timeoutMs);
-      if (evt.type === 'audio-start') {
+      if (evt.type === "audio-start") {
         rate = Number(evt.data.rate ?? rate);
         width = Number(evt.data.width ?? width);
         channels = Number(evt.data.channels ?? channels);
         continue;
       }
-      if (evt.type === 'audio-chunk') {
+
+      if (evt.type === "audio-chunk") {
         rate = Number(evt.data.rate ?? rate);
         width = Number(evt.data.width ?? width);
         channels = Number(evt.data.channels ?? channels);
         if (evt.payload?.length) chunks.push(evt.payload);
         continue;
       }
-      if (evt.type === 'audio-stop') {
+
+      if (evt.type === "audio-stop") {
         const pcm = Buffer.concat(chunks);
-        if (pcm.length === 0) throw new Error('Wyoming returned no audio');
+        if (pcm.length === 0) throw new Error("Wyoming returned no audio");
+
         return {
           pcm,
           rate,
           width,
           channels,
-          voice: opts.voice ?? 'piper-default',
+          voice: opts.voice ?? "piper-default",
         };
       }
-      if (evt.type === 'error') {
+
+      if (evt.type === "error") {
         throw new Error(String(evt.data.message ?? JSON.stringify(evt.data)));
       }
     }
@@ -324,10 +377,14 @@ async function withSocket<T>(
   const result = await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`Wyoming connection timed out after ${timeoutMs}ms (${host}:${port})`));
+      reject(
+        new Error(
+          `Wyoming connection timed out after ${timeoutMs}ms (${host}:${port})`,
+        ),
+      );
     }, timeoutMs + 5_000);
 
-    socket.once('connect', () => {
+    socket.once("connect", () => {
       void fn(socket, reader).then(
         (value) => {
           clearTimeout(timer);
@@ -339,12 +396,14 @@ async function withSocket<T>(
         },
       );
     });
-    socket.on('data', (d) => reader.push(d));
-    socket.on('error', (err) => {
+
+    socket.on("data", (d) => reader.push(d));
+    socket.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
     });
-    socket.on('close', () => {
+
+    socket.on("close", () => {
       // ignore; callers finish on audio-stop
     });
   });

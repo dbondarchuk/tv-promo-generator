@@ -1,12 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChannelView, EtvBackupInfo, FillerPlacement, JobInfo } from '@promo/shared';
+import type {
+  ChannelView,
+  EtvBackupInfo,
+  FillerPlacement,
+  JobInfo,
+} from "@promo/shared";
 import {
   CHANNEL_LANGUAGES,
   FILLER_PLACEMENT_LABELS,
   FILLER_PLACEMENTS,
   isPushOptionsActionable,
-} from '@promo/shared';
-import { api } from '../api';
+} from "@promo/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { api } from "../api";
 
 const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
   pre: true,
@@ -15,20 +21,25 @@ const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
   tail: false,
 };
 
-const KNOWN_LANGUAGE_CODES = new Set<string>(CHANNEL_LANGUAGES.map((l) => l.code));
+const KNOWN_LANGUAGE_CODES = new Set<string>(
+  CHANNEL_LANGUAGES.map((l) => l.code),
+);
 
 function languageSelectValue(raw: string): string {
   const code = raw.trim().toLowerCase();
   if (KNOWN_LANGUAGE_CODES.has(code)) return code;
-  if (code === 'ukr' || code === 'ua') return 'uk';
+  if (code === "ukr" || code === "ua") return "uk";
+
   const base = code.split(/[-_]/)[0] ?? code;
   if (KNOWN_LANGUAGE_CODES.has(base)) return base;
+
   return raw;
 }
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
@@ -43,10 +54,16 @@ function formatLogTime(iso: string): string {
 export function ChannelsPage() {
   const [channels, setChannels] = useState<ChannelView[]>([]);
   const [jobs, setJobs] = useState<JobInfo[]>([]);
-  const [error, setError] = useState('');
-  const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
+  const [error, setError] = useState("");
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [streamStatus, setStreamStatus] = useState<
+    "connecting" | "live" | "reconnecting"
+  >("connecting");
+
   const [busy, setBusy] = useState(false);
-  const [latestPushBackup, setLatestPushBackup] = useState<EtvBackupInfo | null>(null);
+  const [latestPushBackup, setLatestPushBackup] =
+    useState<EtvBackupInfo | null>(null);
+
   const [pushDialogOpen, setPushDialogOpen] = useState(false);
   const [pushFillers, setPushFillers] = useState(DEFAULT_PUSH_FILLERS);
   const [cleanupLegacy, setCleanupLegacy] = useState(true);
@@ -55,11 +72,17 @@ export function ChannelsPage() {
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const userExpandedRef = useRef(false);
-  const prevJobSignatureRef = useRef('');
+  const prevJobSignatureRef = useRef("");
   const seenExclusiveFinishedRef = useRef<Set<string>>(new Set());
 
   const jobsActive = useMemo(
-    () => jobs.some((j) => j.status === 'queued' || j.status === 'running' || j.status === 'late'),
+    () =>
+      jobs.some(
+        (j) =>
+          j.status === "queued" ||
+          j.status === "running" ||
+          j.status === "late",
+      ),
     [jobs],
   );
 
@@ -67,23 +90,28 @@ export function ChannelsPage() {
     () =>
       jobs.some(
         (j) =>
-          (j.kind === 'push' || j.kind === 'rollback') &&
-          (j.status === 'queued' || j.status === 'running'),
+          (j.kind === "push" || j.kind === "rollback") &&
+          (j.status === "queued" || j.status === "running"),
       ),
     [jobs],
   );
 
   /** Per-channel generate job badge: generating wins over in queue. */
   const generateJobBadgeByChannel = useMemo(() => {
-    const map = new Map<string, 'generating' | 'queued'>();
+    const map = new Map<string, "generating" | "queued">();
     for (const job of jobs) {
-      if ((job.kind ?? 'generate') !== 'generate') continue;
-      if (job.status === 'running' || job.status === 'late') {
-        map.set(job.channelNumber, 'generating');
-      } else if (job.status === 'queued' && map.get(job.channelNumber) !== 'generating') {
-        map.set(job.channelNumber, 'queued');
+      if ((job.kind ?? "generate") !== "generate") continue;
+
+      if (job.status === "running" || job.status === "late") {
+        map.set(job.channelNumber, "generating");
+      } else if (
+        job.status === "queued" &&
+        map.get(job.channelNumber) !== "generating"
+      ) {
+        map.set(job.channelNumber, "queued");
       }
     }
+
     return map;
   }, [jobs]);
 
@@ -91,7 +119,7 @@ export function ChannelsPage() {
     try {
       const chs = await api.getChannels();
       setChannels(chs);
-      setError('');
+      setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -107,31 +135,41 @@ export function ChannelsPage() {
   }, []);
 
   useEffect(() => {
+    api
+      .getSettingsStatus()
+      .then((status) => setConfigured(status.configured))
+      .catch(() => setConfigured(false));
+  }, []);
+
+  useEffect(() => {
+    if (configured === false) return;
+
     void refreshChannels();
     void refreshBackups();
     const id = setInterval(() => void refreshChannels(), 15_000);
     return () => clearInterval(id);
-  }, [refreshChannels, refreshBackups]);
+  }, [configured, refreshChannels, refreshBackups]);
 
   useEffect(() => {
-    setStreamStatus('connecting');
+    setStreamStatus("connecting");
     const unsubscribe = api.subscribeJobs(
       (nextJobs) => {
         setJobs(nextJobs);
-        setStreamStatus('live');
+        setStreamStatus("live");
 
         const finished = nextJobs.some(
           (j) =>
-            (j.status === 'succeeded' || j.status === 'failed') &&
+            (j.status === "succeeded" || j.status === "failed") &&
             j.finishedAt &&
             Date.now() - new Date(j.finishedAt).getTime() < 5_000,
         );
+
         if (finished) void refreshChannels();
 
         for (const j of nextJobs) {
           if (
-            (j.kind === 'push' || j.kind === 'rollback') &&
-            (j.status === 'succeeded' || j.status === 'failed') &&
+            (j.kind === "push" || j.kind === "rollback") &&
+            (j.status === "succeeded" || j.status === "failed") &&
             j.finishedAt &&
             !seenExclusiveFinishedRef.current.has(j.id)
           ) {
@@ -141,29 +179,45 @@ export function ChannelsPage() {
         }
 
         setExpandedJobId((prev) => {
-          if (userExpandedRef.current && prev && nextJobs.some((job) => job.id === prev)) {
+          if (
+            userExpandedRef.current &&
+            prev &&
+            nextJobs.some((job) => job.id === prev)
+          ) {
             return prev;
           }
           if (prev && nextJobs.some((job) => job.id === prev)) return prev;
+
           const runningExclusive = nextJobs.find(
             (job) =>
-              (job.kind === 'push' || job.kind === 'rollback') && job.status === 'running',
+              (job.kind === "push" || job.kind === "rollback") &&
+              job.status === "running",
           );
+
           if (runningExclusive) return runningExclusive.id;
-          const running = nextJobs.find((job) => job.status === 'running');
+
+          const running = nextJobs.find((job) => job.status === "running");
           return running?.id ?? prev ?? nextJobs[0]?.id ?? null;
         });
       },
-      () => setStreamStatus((s) => (s === 'live' ? 'reconnecting' : s)),
+      () => setStreamStatus((s) => (s === "live" ? "reconnecting" : s)),
     );
+
     return unsubscribe;
   }, [refreshChannels, refreshBackups]);
 
   useEffect(() => {
     const el = logContainerRef.current;
     if (!el || !expandedJobId) return;
-    const signature = jobs.find((j) => j.id === expandedJobId)?.logs?.map((l) => l.at).join('|') ?? '';
+
+    const signature =
+      jobs
+        .find((j) => j.id === expandedJobId)
+        ?.logs?.map((l) => l.at)
+        .join("|") ?? "";
+
     if (signature === prevJobSignatureRef.current) return;
+
     prevJobSignatureRef.current = signature;
     if (stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
@@ -205,12 +259,12 @@ export function ChannelsPage() {
     const fillerTypes = FILLER_PLACEMENTS.filter((p) => pushFillers[p]);
     const options = { fillerTypes, cleanupLegacy, cleanupUnselected };
     if (!isPushOptionsActionable(options)) {
-      setError('Select at least one filler type, or enable a cleanup option.');
+      setError("Select at least one filler type, or enable a cleanup option.");
       return;
     }
 
     setBusy(true);
-    setError('');
+    setError("");
     setPushDialogOpen(false);
     try {
       const { job } = await api.push(options);
@@ -226,17 +280,21 @@ export function ChannelsPage() {
 
   async function rollback() {
     if (!latestPushBackup) {
-      setError('No pre-push backup available to roll back.');
+      setError("No pre-push backup available to roll back.");
       return;
     }
-    if (!window.confirm(
-      `Restore ersatztv.sqlite3 from backup ${latestPushBackup.id}?\n\n` +
-        'Generation will pause. If ErsatzTV has the DB locked, stop it first, then run rollback.',
-    )) {
+
+    if (
+      !window.confirm(
+        `Restore ersatztv.sqlite3 from backup ${latestPushBackup.id}?\n\n` +
+          "Generation will pause. If ErsatzTV has the DB locked, stop it first, then run rollback.",
+      )
+    ) {
       return;
     }
+
     setBusy(true);
-    setError('');
+    setError("");
     try {
       const { job } = await api.rollback(latestPushBackup.id);
       userExpandedRef.current = true;
@@ -260,12 +318,35 @@ export function ChannelsPage() {
     stickToBottomRef.current = true;
   }
 
-  const selectedPushCount = FILLER_PLACEMENTS.filter((p) => pushFillers[p]).length;
+  const selectedPushCount = FILLER_PLACEMENTS.filter(
+    (p) => pushFillers[p],
+  ).length;
+
   const pushActionable = isPushOptionsActionable({
     fillerTypes: FILLER_PLACEMENTS.filter((p) => pushFillers[p]),
     cleanupLegacy,
     cleanupUnselected,
   });
+
+  if (configured === null) {
+    return <div className="panel muted">Loading…</div>;
+  }
+  if (!configured) {
+    return (
+      <div className="panel setup-needed">
+        <h1>Setup required</h1>
+        <p className="muted">
+          Configure ErsatzTV connection and media paths before generating
+          promos.
+        </p>
+        <p>
+          <Link className="button" to="/settings">
+            Open Settings
+          </Link>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -284,8 +365,9 @@ export function ChannelsPage() {
           >
             <h2 id="push-dialog-title">Push to ErsatzTV</h2>
             <p className="muted">
-              Backs up ersatztv.sqlite3, then wires selected fillers on classic schedules for enabled
-              channels. Generation pauses until push finishes.
+              Backs up ersatztv.sqlite3, then wires selected fillers on classic
+              schedules for enabled channels. Generation pauses until push
+              finishes.
             </p>
             <fieldset className="filler-type-fieldset">
               <legend>Filler types</legend>
@@ -295,7 +377,10 @@ export function ChannelsPage() {
                     type="checkbox"
                     checked={pushFillers[placement]}
                     onChange={(e) =>
-                      setPushFillers((prev) => ({ ...prev, [placement]: e.target.checked }))
+                      setPushFillers((prev) => ({
+                        ...prev,
+                        [placement]: e.target.checked,
+                      }))
                     }
                   />
                   <span>
@@ -315,7 +400,9 @@ export function ChannelsPage() {
                 />
                 <div className="label-text">
                   Remove legacy untyped fillers
-                  <span className="muted">Promo Generator - Next - ChannelName</span>
+                  <span className="muted">
+                    Promo Generator - Next - ChannelName
+                  </span>
                 </div>
               </label>
               <label className="checkbox-row">
@@ -326,15 +413,22 @@ export function ChannelsPage() {
                 />
                 <div className="label-text">
                   Remove unselected typed fillers
-                  <span className="muted">clear slots + delete unused presets</span>
+                  <span className="muted">
+                    clear slots + delete unused presets
+                  </span>
                 </div>
               </label>
             </fieldset>
             <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-              Typed names look like <code>Promo Generator - Next - Pre - ChannelName</code>.
-              Select no types and enable “Remove unselected” to strip all typed promo fillers.
+              Typed names look like{" "}
+              <code>Promo Generator - Next - Pre - ChannelName</code>. Select no
+              types and enable “Remove unselected” to strip all typed promo
+              fillers.
             </p>
-            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+            <div
+              className="row"
+              style={{ justifyContent: "flex-end", marginTop: 16 }}
+            >
               <button
                 className="secondary"
                 disabled={busy}
@@ -350,35 +444,55 @@ export function ChannelsPage() {
                 {selectedPushCount > 0
                   ? `Push (${selectedPushCount})`
                   : cleanupLegacy || cleanupUnselected
-                    ? 'Cleanup'
-                    : 'Push'}
+                    ? "Cleanup"
+                    : "Push"}
               </button>
             </div>
           </div>
         </div>
       )}
       <div className="panel">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
           <div>
             <h1>Channels</h1>
-            <p className="muted">Preview next items, generate promos, and push fillers to ErsatzTV.</p>
+            <p className="muted">
+              Preview next items, generate promos, and push fillers to ErsatzTV.
+            </p>
           </div>
           <div className="row">
-            <button className="secondary" disabled={busy} onClick={() => void refreshChannels()}>Refresh</button>
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => void refreshChannels()}
+            >
+              Refresh
+            </button>
             <button
               disabled={busy || exclusiveActive}
-              title={exclusiveActive ? 'Paused while push/rollback is running' : undefined}
+              title={
+                exclusiveActive
+                  ? "Paused while push/rollback is running"
+                  : undefined
+              }
               onClick={() => void generateAll()}
             >
               Generate all
             </button>
-            <button className="success" disabled={busy || exclusiveActive} onClick={openPushDialog}>
+            <button
+              className="success"
+              disabled={busy || exclusiveActive}
+              onClick={openPushDialog}
+            >
               Push to ErsatzTV
             </button>
             <button
               className="danger"
               disabled={busy || exclusiveActive || !latestPushBackup}
-              title={latestPushBackup ? `Restore backup ${latestPushBackup.id}` : 'No pre-push backup yet'}
+              title={
+                latestPushBackup
+                  ? `Restore backup ${latestPushBackup.id}`
+                  : "No pre-push backup yet"
+              }
               onClick={() => void rollback()}
             >
               Rollback DB
@@ -388,31 +502,34 @@ export function ChannelsPage() {
         {error && <p className="error">{error}</p>}
         {exclusiveActive && (
           <p className="muted" style={{ marginTop: 8 }}>
-            Push/rollback job is active — generate jobs are paused. Open the Jobs panel for live logs.
+            Push/rollback job is active — generate jobs are paused. Open the
+            Jobs panel for live logs.
           </p>
         )}
         {latestPushBackup && (
           <p className="muted" style={{ marginTop: 8 }}>
             Last pre-push backup: <code>{latestPushBackup.id}</code>
-            {' · '}
+            {" · "}
             {formatBytes(latestPushBackup.bytes)}
-            {' · '}
+            {" · "}
             {new Date(latestPushBackup.createdAt).toLocaleString()}
           </p>
         )}
       </div>
 
       <div className="panel">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ marginBottom: 0 }}>Jobs</h2>
           <span className="muted" style={{ fontSize: 13 }}>
-            {streamStatus === 'live'
-              ? (jobsActive
-                ? (exclusiveActive ? 'Live via SSE · push/rollback pausing generate' : 'Live via SSE')
-                : 'SSE connected · idle')
-              : streamStatus === 'reconnecting'
-                ? 'SSE reconnecting…'
-                : 'Connecting SSE…'}
+            {streamStatus === "live"
+              ? jobsActive
+                ? exclusiveActive
+                  ? "Live via SSE · push/rollback pausing generate"
+                  : "Live via SSE"
+                : "SSE connected · idle"
+              : streamStatus === "reconnecting"
+                ? "SSE reconnecting…"
+                : "Connecting SSE…"}
           </span>
         </div>
         <div className="jobs">
@@ -420,30 +537,44 @@ export function ChannelsPage() {
           {jobs.slice(0, 20).map((j) => {
             const open = expandedJobId === j.id;
             const latest = j.logs?.[j.logs.length - 1];
-            const kind = j.kind ?? 'generate';
+            const kind = j.kind ?? "generate";
             const kindClass =
-              kind === 'push' ? 'push' : kind === 'rollback' ? 'rollback' : 'gen';
+              kind === "push"
+                ? "push"
+                : kind === "rollback"
+                  ? "rollback"
+                  : "gen";
+
             return (
-              <div className={`job-block ${open ? 'open' : ''} job-${kindClass}`} key={j.id}>
+              <div
+                className={`job-block ${open ? "open" : ""} job-${kindClass}`}
+                key={j.id}
+              >
                 <button
                   type="button"
                   className="job job-toggle"
                   onClick={() => toggleJob(j.id, open)}
                 >
                   <span>
-                    <span className={`badge ${kindClass}`}>{kind}</span>
-                    {' '}
+                    <span className={`badge ${kindClass}`}>{kind}</span>{" "}
                     <strong>{j.channelName}</strong>
-                    {kind === 'generate' && <span className="muted"> #{j.channelNumber}</span>}
+                    {kind === "generate" && (
+                      <span className="muted"> #{j.channelNumber}</span>
+                    )}
                   </span>
                   <span className="job-toggle-meta">
                     {!open && latest && (
-                      <span className={`job-preview ${latest.level}`}>{latest.message}</span>
+                      <span className={`job-preview ${latest.level}`}>
+                        {latest.message}
+                      </span>
                     )}
-                    <span className={`badge ${j.status === 'succeeded' ? 'ok' : j.status === 'failed' ? 'err' : 'warn'}`}>
-                      {j.status}{j.late ? ' · late' : ''}
+                    <span
+                      className={`badge ${j.status === "succeeded" ? "ok" : j.status === "failed" ? "err" : "warn"}`}
+                    >
+                      {j.status}
+                      {j.late ? " · late" : ""}
                     </span>
-                    <span className="muted">{open ? '▾' : '▸'}</span>
+                    <span className="muted">{open ? "▾" : "▸"}</span>
                   </span>
                 </button>
                 {open && (
@@ -452,19 +583,29 @@ export function ChannelsPage() {
                     ref={logContainerRef}
                     onScroll={(e) => {
                       const el = e.currentTarget;
-                      stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+                      stickToBottomRef.current =
+                        el.scrollHeight - el.scrollTop - el.clientHeight < 40;
                     }}
                   >
                     {(!j.logs || j.logs.length === 0) && (
                       <div className="muted">No log lines yet.</div>
                     )}
                     {(j.logs ?? []).map((entry, idx) => (
-                      <div className={`job-log-line ${entry.level}`} key={`${j.id}-${idx}-${entry.at}`}>
-                        <span className="job-log-time">{formatLogTime(entry.at)}</span>
+                      <div
+                        className={`job-log-line ${entry.level}`}
+                        key={`${j.id}-${idx}-${entry.at}`}
+                      >
+                        <span className="job-log-time">
+                          {formatLogTime(entry.at)}
+                        </span>
                         <span className="job-log-msg">{entry.message}</span>
                       </div>
                     ))}
-                    {j.error && <div className="job-log-line error"><span className="job-log-msg">{j.error}</span></div>}
+                    {j.error && (
+                      <div className="job-log-line error">
+                        <span className="job-log-msg">{j.error}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -477,42 +618,74 @@ export function ChannelsPage() {
         {channels.map((ch) => (
           <article className="channel-card" key={ch.number}>
             <header>
-              {ch.logoUrl ? <img src={ch.logoUrl} alt="" /> : <div className="swatch" style={{ width: 48, height: 48, borderRadius: 24, background: ch.color }} />}
+              {ch.logoUrl ? (
+                <img src={ch.logoUrl} alt="" />
+              ) : (
+                <div
+                  className="swatch"
+                  style={{
+                    width: 48,
+                    height: 48,
+                    borderRadius: 24,
+                    background: ch.color,
+                  }}
+                />
+              )}
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{ch.name}</div>
-                <div className="muted">#{ch.number} · {ch.language}</div>
+                <div className="muted">
+                  #{ch.number} · {ch.language}
+                </div>
               </div>
-              <span className="swatch" style={{ background: ch.color }} title={ch.color} />
+              <span
+                className="swatch"
+                style={{ background: ch.color }}
+                title={ch.color}
+              />
             </header>
             <div className="body">
               <div className="row">
-                <label style={{ flex: '0 0 auto' }}>
+                <label style={{ flex: "0 0 auto" }}>
                   Enabled
                   <select
-                    value={ch.enabled ? '1' : '0'}
-                    onChange={(e) => void patchChannel(ch.number, { enabled: e.target.value === '1' })}
+                    value={ch.enabled ? "1" : "0"}
+                    onChange={(e) =>
+                      void patchChannel(ch.number, {
+                        enabled: e.target.value === "1",
+                      })
+                    }
                   >
                     <option value="1">Yes</option>
                     <option value="0">No</option>
                   </select>
                 </label>
-                <label style={{ flex: '0 0 auto' }}>
+                <label style={{ flex: "0 0 auto" }}>
                   Color
                   <input
                     type="color"
                     value={ch.color}
-                    onChange={(e) => void patchChannel(ch.number, { color: e.target.value, colorLocked: true })}
+                    onChange={(e) =>
+                      void patchChannel(ch.number, {
+                        color: e.target.value,
+                        colorLocked: true,
+                      })
+                    }
                   />
                 </label>
                 <label>
                   Language
                   <select
                     value={languageSelectValue(ch.language)}
-                    onChange={(e) => void patchChannel(ch.number, { language: e.target.value })}
+                    onChange={(e) =>
+                      void patchChannel(ch.number, { language: e.target.value })
+                    }
                   >
-                    {!KNOWN_LANGUAGE_CODES.has(languageSelectValue(ch.language)) && ch.language && (
-                      <option value={ch.language}>{ch.language}</option>
-                    )}
+                    {!KNOWN_LANGUAGE_CODES.has(
+                      languageSelectValue(ch.language),
+                    ) &&
+                      ch.language && (
+                        <option value={ch.language}>{ch.language}</option>
+                      )}
                     {CHANNEL_LANGUAGES.map((lang) => (
                       <option key={lang.code} value={lang.code}>
                         {lang.label}
@@ -526,52 +699,74 @@ export function ChannelsPage() {
                 <div className="muted">Now: {ch.currentItem.title}</div>
               )}
               {ch.nextRegenAt && (
-                <div className="muted">Next regen by {new Date(ch.nextRegenAt).toLocaleString()}</div>
+                <div className="muted">
+                  Next regen by {new Date(ch.nextRegenAt).toLocaleString()}
+                </div>
               )}
 
               <h3 style={{ fontSize: 14, marginTop: 4 }}>
-                Next {ch.nextItems.length || 'items'}
+                Next {ch.nextItems.length || "items"}
               </h3>
               <ul className="item-list">
-                {ch.nextItems.length === 0 && <li className="muted">No upcoming items</li>}
+                {ch.nextItems.length === 0 && (
+                  <li className="muted">No upcoming items</li>
+                )}
                 {ch.nextItems.map((item) => (
                   <li key={`${item.mediaItemId}-${item.start}`}>
-                    <div><strong>{item.title}</strong></div>
+                    <div>
+                      <strong>{item.title}</strong>
+                    </div>
                     <div className="muted">
                       {item.seasonNumber != null && item.episodeNumber != null
-                        ? `S${item.seasonNumber}E${item.episodeNumber}${item.episodeTitle ? ` - ${item.episodeTitle}` : ''}`
-                        : item.episodeTitle || '—'}
+                        ? `S${item.seasonNumber}E${item.episodeNumber}${item.episodeTitle ? ` - ${item.episodeTitle}` : ""}`
+                        : item.episodeTitle || "—"}
                     </div>
-                    <div className="muted">{new Date(item.start).toLocaleString()}</div>
-                    {item.error
-                      ? <div className="error">{item.error}</div>
-                      : <div className="success">{item.filePath}</div>}
+                    <div className="muted">
+                      {new Date(item.start).toLocaleString()}
+                    </div>
+                    {item.error ? (
+                      <div className="error">{item.error}</div>
+                    ) : (
+                      <div className="success">{item.filePath}</div>
+                    )}
                   </li>
                 ))}
               </ul>
 
+              <div className="flex-1" />
+
               {ch.promoExists && ch.promoUrl && (
-                <video key={ch.promoUrl + (ch.lastGeneratedAt ?? '')} controls src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? '')}`} />
+                <video
+                  key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
+                  controls
+                  src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
+                />
               )}
-              {!ch.promoExists && <div className="muted">No promo generated yet.</div>}
+              {!ch.promoExists && (
+                <div className="muted">No promo generated yet.</div>
+              )}
               {ch.lastError && <div className="error">{ch.lastError}</div>}
 
               <div className="row">
                 <button
                   disabled={busy || exclusiveActive || !ch.enabled}
-                  title={exclusiveActive ? 'Paused while push/rollback is running' : undefined}
+                  title={
+                    exclusiveActive
+                      ? "Paused while push/rollback is running"
+                      : undefined
+                  }
                   onClick={() => void generateOne(ch.number)}
                 >
                   Generate
                 </button>
-                {generateJobBadgeByChannel.get(ch.number) === 'generating' && (
+                {generateJobBadgeByChannel.get(ch.number) === "generating" && (
                   <span className="badge warn">generating</span>
                 )}
-                {generateJobBadgeByChannel.get(ch.number) === 'queued' && (
+                {generateJobBadgeByChannel.get(ch.number) === "queued" && (
                   <span className="badge">in queue</span>
                 )}
-                <span className={`badge ${ch.promoExists ? 'ok' : 'warn'}`}>
-                  {ch.promoExists ? 'promo ready' : 'missing promo'}
+                <span className={`badge ${ch.promoExists ? "ok" : "warn"}`}>
+                  {ch.promoExists ? "promo ready" : "missing promo"}
                 </span>
               </div>
             </div>

@@ -13,7 +13,10 @@ export interface PromoChapterSource {
   startLabel: string;
 }
 
-export type PromoProgress = (message: string, level?: 'info' | 'warn' | 'error') => void;
+export type PromoProgress = (
+  message: string,
+  level?: "info" | "warn" | "error",
+) => void;
 
 export interface PromoRenderRequest {
   channelName: string;

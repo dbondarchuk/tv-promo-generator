@@ -1,0 +1,28 @@
+# Local development image build (same mounts/env as production compose).
+# Usage: docker compose -f docker-compose.build.yml up -d --build
+services:
+  promo-generator:
+    build: .
+    image: tv-promo-generator:local
+    ports:
+      - "5174:5174"
+    environment:
+      PORT: "5174"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CACHE_PATH: /data/cache
+      CONFIG_PATH: /data/config
+      TIME_ZONE: ${TIME_ZONE:-America/New_York}
+      # LIBVA_DRIVER_NAME: iHD
+    volumes:
+      - ${MEDIA_PATH:-./media}:/library:ro
+      - ${PROMO_PATH:-./output}:/data/output
+      - ${PROMO_PATH:-./output}:/promos
+      - ${CONFIG_PATH:-./config}:/data/config
+      - ${CACHE_PATH:-./cache}:/data/cache
+      - ${ETV_CONFIG_PATH:-./etv-config}:/etv-config
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    restart: unless-stopped
