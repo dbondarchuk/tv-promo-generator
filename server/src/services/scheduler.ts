@@ -1,21 +1,12 @@
 import { AppSettings } from '@promo/shared';
 import { openDb, getCurrentPrimaryItem, getUpcomingPlayoutItems, listChannelNumbers } from '../ersatztv/db.js';
+import { fromSqliteUtc, toUtcSqlite } from '../ersatztv/time.js';
 import { fileExists, promoOutputFile } from '../util/paths.js';
 import { createLogger } from '../util/log.js';
 import { loadChannelOverrides } from '../config.js';
 import { JobQueue } from './jobs.js';
 
 const log = createLogger('scheduler');
-
-function fromSqliteUtc(value: string): Date {
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const hasZone = /Z|[+-]\d{2}:?\d{2}$/.test(normalized);
-  return new Date(hasZone ? normalized : `${normalized}Z`);
-}
-
-function toUtcSqlite(date: Date): string {
-  return date.toISOString().replace(/\.\d{3}Z$/, '').replace('T', ' ');
-}
 
 export class RegenScheduler {
   private timer?: NodeJS.Timeout;

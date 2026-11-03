@@ -27,19 +27,10 @@ import { loadChannelOverrides, updateChannelOverride } from '../config.js';
 import { fileExists, findLibraryFile, promoOutputFile, rewritePath } from '../util/paths.js';
 import { createLogger } from '../util/log.js';
 import { probeDurationSeconds, probeHasAudio } from '../ffmpeg/probe.js';
+import { fromSqliteUtc, toUtcSqlite } from '../ersatztv/time.js';
 import { formatStartsAtLabel } from '../voice/templates.js';
 
 const log = createLogger('channels');
-
-function toUtcSqlite(date: Date): string {
-  return date.toISOString().replace(/\.\d{3}Z$/, '').replace('T', ' ');
-}
-
-function fromSqliteUtc(value: string): Date {
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const hasZone = /Z|[+-]\d{2}:?\d{2}$/.test(normalized);
-  return new Date(hasZone ? normalized : `${normalized}Z`);
-}
 
 function matchProgramme(programmes: XmltvProgramme[], channelId: string, start: Date): XmltvProgramme | undefined {
   const t = start.getTime();
