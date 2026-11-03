@@ -90,3 +90,35 @@ test('voice cache key inputs are stable for English', () => {
   const b = buildVoiceLine('en', { channelName: 'A', title: 'B', seasonNumber: 1, episodeNumber: 2, cue: 'next' });
   assert.equal(a.text, b.text);
 });
+
+test('showVoiceDetail controls episode announcement', () => {
+  const base = {
+    channelName: 'SciFi',
+    title: 'Futurama',
+    seasonNumber: 6,
+    episodeNumber: 11,
+    episodeTitle: 'Benderama',
+    cue: 'next' as const,
+  };
+
+  assert.equal(
+    buildVoiceLine('en', { ...base, showVoiceDetail: 'show' }).segments[1],
+    'Futurama',
+  );
+  assert.equal(
+    buildVoiceLine('en', { ...base, showVoiceDetail: 'show_episode' }).segments[1],
+    'Futurama. Benderama',
+  );
+  assert.equal(
+    buildVoiceLine('en', { ...base, showVoiceDetail: 'show_season_episode' }).segments[1],
+    'Futurama. Season 6, Episode 11.',
+  );
+  assert.equal(
+    buildVoiceLine('en', { ...base, showVoiceDetail: 'show_season_name' }).segments[1],
+    'Futurama. Season 6, Benderama.',
+  );
+  assert.match(
+    buildVoiceLine('en', { ...base, showVoiceDetail: 'show_season_episode_name' }).segments[1] ?? '',
+    /^Futurama\. Season 6, Episode 11, Benderama\./,
+  );
+});

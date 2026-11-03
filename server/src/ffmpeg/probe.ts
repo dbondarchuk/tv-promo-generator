@@ -36,17 +36,88 @@ export async function probeDurationSeconds(filePath: string): Promise<number> {
 
 export async function probeHasAudio(filePath: string): Promise<boolean> {
   try {
-    const out = await runFfprobe([
-      '-v', 'error',
-      '-select_streams', 'a:0',
-      '-show_entries', 'stream=index',
-      '-of', 'csv=p=0',
-      filePath,
-    ]);
-    return out.length > 0;
+    const streams = await probeAudioStreams(filePath);
+    return streams.length > 0;
   } catch {
     return false;
   }
+}
+
+export interface AudioStreamInfo {
+  /** Index among audio streams only (ffmpeg `a:N`). */
+  audioIndex: number;
+  language?: string;
+  title?: string;
+  isDefault: boolean;
+}
+
+/** ISO 639-1 channel codes → common stream tag variants (639-1 / 639-2 / aliases). */
+const AUDIO_LANG_ALIASES: Record<string, string[]> = {
+  en: ['en', 'eng'],
+  es: ['es', 'spa', 'esl', 'esp'],
+  fr: ['fr', 'fra', 'fre'],
+  de: ['de', 'deu', 'ger'],
+  it: ['it', 'ita'],
+  pt: ['pt', 'por'],
+  nl: ['nl', 'nld', 'dut'],
+  pl: ['pl', 'pol'],
+  ru: ['ru', 'rus'],
+  uk: ['uk', 'ukr', 'ua'],
+  ja: ['ja', 'jpn'],
+  zh: ['zh', 'zho', 'chi', 'cmn', 'yue'],
+  ko: ['ko', 'kor'],
+};
+
+function normalizeStreamLanguage(tag?: string): string {
+  if (!tag) return '';
+  return tag.trim().toLowerCase().replace(/_/g, '-').split('-')[0] ?? '';
+}
+
+export function audioStreamMatchesLanguage(streamLang: string | undefined, channelLanguage: string): boolean {
+  const stream = normalizeStreamLanguage(streamLang);
+  if (!stream) return false;
+  const want = channelLanguage.trim().toLowerCase().replace(/_/g, '-').split('-')[0] || 'en';
+  const aliases = AUDIO_LANG_ALIASES[want] ?? [want];
+  if (aliases.includes(stream)) return true;
+  for (const [code, als] of Object.entries(AUDIO_LANG_ALIASES)) {
+    if (als.includes(stream) && code === want) return true;
+  }
+  return stream === want;
+}
+
+export async function probeAudioStreams(filePath: string): Promise<AudioStreamInfo[]> {
+  const out = await runFfprobe([
+    '-v', 'error',
+    '-select_streams', 'a',
+    '-show_entries', 'stream=index:stream_tags=language,title:stream_disposition=default',
+    '-of', 'json',
+    filePath,
+  ]);
+  const parsed = JSON.parse(out) as {
+    streams?: Array<{
+      index?: number;
+      tags?: { language?: string; title?: string };
+      disposition?: { default?: number | string };
+    }>;
+  };
+  const streams = parsed.streams ?? [];
+  return streams.map((s, audioIndex) => ({
+    audioIndex,
+    language: s.tags?.language,
+    title: s.tags?.title,
+    isDefault: Number(s.disposition?.default ?? 0) === 1,
+  }));
+}
+
+/** Prefer language match, then default disposition, then first audio stream. */
+export function pickAudioStreamForLanguage(
+  streams: AudioStreamInfo[],
+  channelLanguage: string,
+): AudioStreamInfo | undefined {
+  if (streams.length === 0) return undefined;
+  const matched = streams.find((s) => audioStreamMatchesLanguage(s.language, channelLanguage));
+  if (matched) return matched;
+  return streams.find((s) => s.isDefault) ?? streams[0];
 }
 
 export function pickRandomWindows(duration: number, count: number, windowSeconds: number): number[] {

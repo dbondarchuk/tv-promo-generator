@@ -1,6 +1,11 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  FILLER_PLACEMENT_LABELS,
+  FILLER_PLACEMENTS,
+  FillerPlacement,
+} from '@promo/shared';
 
 export interface DbSchema {
   tables: Set<string>;
@@ -70,11 +75,46 @@ export function openDb(
   return db;
 }
 
-/** Manual collection + filler names for a channel's next-items promo. */
-export function promoNextNames(channelName: string): { collection: string; filler: string } {
-  const base = `Promo Generator - Next - ${channelName}`;
-  return { collection: base, filler: base };
+/** Manual collection + typed filler names for a channel's next-items promo. */
+export function promoNextNames(channelName: string): {
+  collection: string;
+  /**
+   * Untyped filler name from the first push implementation
+   * (`Promo Generator - Next - {channel}` — same string as the collection).
+   */
+  legacyFiller: string;
+  filler: (placement: FillerPlacement) => string;
+} {
+  const collection = `Promo Generator - Next - ${channelName}`;
+  const filler = (placement: FillerPlacement) =>
+    `Promo Generator - Next - ${FILLER_PLACEMENT_LABELS[placement]} - ${channelName}`;
+
+  return {
+    collection,
+    legacyFiller: collection,
+    filler,
+  };
 }
+
+/** Schedule-item columns that can hold a filler preset id. */
+const SCHEDULE_FILLER_COLUMNS = [
+  'PreRollFillerId',
+  'MidRollFillerId',
+  'PostRollFillerId',
+  'TailFillerId',
+  'FallbackFillerId',
+] as const;
+
+/** ErsatzTV FillerKind + ProgramScheduleItem column for each placement. */
+export const FILLER_PLACEMENT_META: Record<
+  FillerPlacement,
+  { fillerKind: number; column: string }
+> = {
+  pre: { fillerKind: 1, column: 'PreRollFillerId' },
+  middle: { fillerKind: 2, column: 'MidRollFillerId' },
+  post: { fillerKind: 3, column: 'PostRollFillerId' },
+  tail: { fillerKind: 4, column: 'TailFillerId' },
+};
 
 export function loadSchema(db: Database.Database): DbSchema {
   if (schemaCache) return schemaCache;
@@ -540,13 +580,15 @@ export function upsertManualCollection(
 }
 
 /**
- * Pre-roll filler preset that plays count=1 from a manual Collection.
+ * Filler preset that plays count=1 from a manual Collection.
  * CollectionType.Collection = 0 (not OtherVideo/MediaItem).
+ * FillerKind: PreRoll=1, MidRoll=2, PostRoll=3, Tail=4.
  */
 export function upsertFillerPresetForCollection(
   db: Database.Database,
   name: string,
   collectionId: number,
+  fillerKind: number,
 ): { id: number; created: boolean } {
   const schema = loadSchema(db);
   requireColumns(schema, 'FillerPreset', [
@@ -563,12 +605,12 @@ export function upsertFillerPresetForCollection(
     | { id: number }
     | undefined;
   const cols = schema.columns.get('FillerPreset') ?? new Set();
-  // FillerKind PreRoll = 1, FillerMode Count = 2, CollectionType Collection = 0
+  // FillerMode Count = 2, CollectionType Collection = 0
   if (existing) {
     db.prepare(
       `
       UPDATE FillerPreset
-      SET FillerKind = 1,
+      SET FillerKind = ?,
           FillerMode = 2,
           Count = 1,
           CollectionType = 0,
@@ -580,7 +622,7 @@ export function upsertFillerPresetForCollection(
           PlaylistId = NULL
       WHERE Id = ?
     `,
-    ).run(collectionId, existing.id);
+    ).run(fillerKind, collectionId, existing.id);
     return { id: existing.id, created: false };
   }
 
@@ -593,7 +635,7 @@ export function upsertFillerPresetForCollection(
     'CollectionId',
     'AllowWatermarks',
   ];
-  const insertVals: Array<string | number> = [name, 1, 2, 1, 0, collectionId, 0];
+  const insertVals: Array<string | number> = [name, fillerKind, 2, 1, 0, collectionId, 0];
   if (cols.has('UseChaptersAsMediaItems')) {
     insertCols.push('UseChaptersAsMediaItems');
     insertVals.push(0);
@@ -605,31 +647,194 @@ export function upsertFillerPresetForCollection(
   return { id: Number(info.lastInsertRowid), created: true };
 }
 
-export function setScheduleItemsPreRoll(
+function scheduleFillerColumnsPresent(itemCols: Set<string>): string[] {
+  return SCHEDULE_FILLER_COLUMNS.filter((column) => itemCols.has(column));
+}
+
+/** Clear schedule slots that point at FillerPresets with the given names. */
+function clearScheduleFillersByName(
   db: Database.Database,
   programScheduleId: number,
-  fillerPresetId: number,
-): { updated: number; previousNames: string[] } {
-  const schema = loadSchema(db);
-  requireColumns(schema, 'ProgramScheduleItem', ['Id', 'ProgramScheduleId', 'PreRollFillerId']);
-  const previous = db
-    .prepare(
-      `
-      SELECT DISTINCT fp.Name AS name
-      FROM ProgramScheduleItem psi
-      LEFT JOIN FillerPreset fp ON fp.Id = psi.PreRollFillerId
-      WHERE psi.ProgramScheduleId = ? AND psi.PreRollFillerId IS NOT NULL AND psi.PreRollFillerId != ?
-    `,
-    )
-    .all(programScheduleId, fillerPresetId) as Array<{ name: string | null }>;
+  columns: string[],
+  fillerNames: string[],
+): { cleared: number; columnsTouched: string[] } {
+  if (fillerNames.length === 0 || columns.length === 0) {
+    return { cleared: 0, columnsTouched: [] };
+  }
 
-  const result = db
-    .prepare(`UPDATE ProgramScheduleItem SET PreRollFillerId = ? WHERE ProgramScheduleId = ?`)
-    .run(fillerPresetId, programScheduleId);
-  return {
-    updated: result.changes,
-    previousNames: previous.map((p) => p.name).filter((n): n is string => Boolean(n)),
-  };
+  const namePlaceholders = fillerNames.map(() => '?').join(', ');
+  let cleared = 0;
+  const columnsTouched: string[] = [];
+
+  for (const column of columns) {
+    const result = db
+      .prepare(
+        `
+        UPDATE ProgramScheduleItem
+        SET ${column} = NULL
+        WHERE ProgramScheduleId = ?
+          AND ${column} IN (
+            SELECT Id FROM FillerPreset WHERE Name IN (${namePlaceholders})
+          )
+      `,
+      )
+      .run(programScheduleId, ...fillerNames);
+
+    if (result.changes > 0) {
+      cleared += result.changes;
+      columnsTouched.push(column);
+    }
+  }
+
+  return { cleared, columnsTouched };
+}
+
+function fillerPresetReferencedAnywhere(
+  db: Database.Database,
+  fillerId: number,
+  columns: string[],
+): boolean {
+  for (const column of columns) {
+    const row = db
+      .prepare(
+        `
+        SELECT 1 AS ok
+        FROM ProgramScheduleItem
+        WHERE ${column} = ?
+        LIMIT 1
+      `,
+      )
+      .get(fillerId) as { ok: number } | undefined;
+    if (row) return true;
+  }
+  return false;
+}
+
+/** Delete a FillerPreset by name when no schedule item references it. */
+function deleteOrphanFillerPreset(
+  db: Database.Database,
+  fillerName: string,
+  columns: string[],
+): boolean {
+  const schema = loadSchema(db);
+  if (!schema.tables.has('FillerPreset')) return false;
+  requireColumns(schema, 'FillerPreset', ['Id', 'Name']);
+
+  const existing = db
+    .prepare(`SELECT Id AS id FROM FillerPreset WHERE Name = ?`)
+    .get(fillerName) as { id: number } | undefined;
+  if (!existing) return false;
+  if (fillerPresetReferencedAnywhere(db, existing.id, columns)) return false;
+
+  db.prepare(`DELETE FROM FillerPreset WHERE Id = ?`).run(existing.id);
+  return true;
+}
+
+export interface ApplyScheduleFillersOptions {
+  selected: FillerPlacement[];
+  presetIds: Partial<Record<FillerPlacement, number>>;
+  cleanupLegacy: boolean;
+  cleanupUnselected: boolean;
+}
+
+/**
+ * Wire selected filler placements on schedule items; optionally clear legacy /
+ * unselected typed promo fillers (and delete unused presets).
+ */
+export function applyScheduleItemFillers(
+  db: Database.Database,
+  programScheduleId: number,
+  channelName: string,
+  options: ApplyScheduleFillersOptions,
+): { notes: string[]; itemCount: number } {
+  const schema = loadSchema(db);
+  requireColumns(schema, 'ProgramScheduleItem', ['Id', 'ProgramScheduleId']);
+  const itemCols = schema.columns.get('ProgramScheduleItem') ?? new Set();
+  const fillerColumns = scheduleFillerColumnsPresent(itemCols);
+  const names = promoNextNames(channelName);
+  const selectedSet = new Set(options.selected);
+  const notes: string[] = [];
+
+  const itemCountRow = db
+    .prepare(`SELECT COUNT(*) AS n FROM ProgramScheduleItem WHERE ProgramScheduleId = ?`)
+    .get(programScheduleId) as { n: number };
+  const itemCount = itemCountRow.n;
+
+  if (options.cleanupLegacy) {
+    // First push version used an untyped filler (same name as the collection).
+    const legacyClear = clearScheduleFillersByName(db, programScheduleId, fillerColumns, [
+      names.legacyFiller,
+    ]);
+    if (legacyClear.cleared > 0) {
+      notes.push(
+        `Legacy filler "${names.legacyFiller}": cleared ${legacyClear.cleared} slot(s)` +
+          ` (${legacyClear.columnsTouched.join(', ')})`,
+      );
+    }
+  }
+
+  for (const placement of FILLER_PLACEMENTS) {
+    const meta = FILLER_PLACEMENT_META[placement];
+    if (!itemCols.has(meta.column)) {
+      notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: column ${meta.column} missing — skipped`);
+      continue;
+    }
+
+    if (selectedSet.has(placement)) {
+      const presetId = options.presetIds[placement];
+      if (presetId == null) {
+        notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: no preset id — skipped`);
+        continue;
+      }
+
+      const previous = db
+        .prepare(
+          `
+          SELECT DISTINCT fp.Name AS name
+          FROM ProgramScheduleItem psi
+          LEFT JOIN FillerPreset fp ON fp.Id = psi.${meta.column}
+          WHERE psi.ProgramScheduleId = ?
+            AND psi.${meta.column} IS NOT NULL
+            AND psi.${meta.column} != ?
+        `,
+        )
+        .all(programScheduleId, presetId) as Array<{ name: string | null }>;
+
+      const result = db
+        .prepare(
+          `UPDATE ProgramScheduleItem SET ${meta.column} = ? WHERE ProgramScheduleId = ?`,
+        )
+        .run(presetId, programScheduleId);
+
+      const replaced = previous
+        .map((p) => p.name)
+        .filter((n): n is string => Boolean(n));
+      notes.push(
+        `${FILLER_PLACEMENT_LABELS[placement]}: set on ${result.changes} item(s)` +
+          (replaced.length ? ` (was: ${replaced.join(', ')})` : ''),
+      );
+      continue;
+    }
+
+    if (!options.cleanupUnselected) continue;
+
+    const typedName = names.filler(placement);
+    const result = clearScheduleFillersByName(db, programScheduleId, [meta.column], [typedName]);
+    if (result.cleared > 0) {
+      notes.push(
+        `${FILLER_PLACEMENT_LABELS[placement]}: cleared ${result.cleared} item(s) matching promo name`,
+      );
+    }
+    if (deleteOrphanFillerPreset(db, typedName, fillerColumns)) {
+      notes.push(`${FILLER_PLACEMENT_LABELS[placement]}: deleted unused preset "${typedName}"`);
+    }
+  }
+
+  if (options.cleanupLegacy && deleteOrphanFillerPreset(db, names.legacyFiller, fillerColumns)) {
+    notes.push(`Legacy filler preset "${names.legacyFiller}" deleted (unused)`);
+  }
+
+  return { notes, itemCount };
 }
 
 export function ensurePromoLibrary(

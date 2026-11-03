@@ -1,6 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChannelView, EtvBackupInfo, JobInfo } from '@promo/shared';
+import type { ChannelView, EtvBackupInfo, FillerPlacement, JobInfo } from '@promo/shared';
+import {
+  CHANNEL_LANGUAGES,
+  FILLER_PLACEMENT_LABELS,
+  FILLER_PLACEMENTS,
+  isPushOptionsActionable,
+} from '@promo/shared';
 import { api } from '../api';
+
+const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
+  pre: true,
+  middle: false,
+  post: false,
+  tail: false,
+};
+
+const KNOWN_LANGUAGE_CODES = new Set<string>(CHANNEL_LANGUAGES.map((l) => l.code));
+
+function languageSelectValue(raw: string): string {
+  const code = raw.trim().toLowerCase();
+  if (KNOWN_LANGUAGE_CODES.has(code)) return code;
+  if (code === 'ukr' || code === 'ua') return 'uk';
+  const base = code.split(/[-_]/)[0] ?? code;
+  if (KNOWN_LANGUAGE_CODES.has(base)) return base;
+  return raw;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -23,6 +47,10 @@ export function ChannelsPage() {
   const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [busy, setBusy] = useState(false);
   const [latestPushBackup, setLatestPushBackup] = useState<EtvBackupInfo | null>(null);
+  const [pushDialogOpen, setPushDialogOpen] = useState(false);
+  const [pushFillers, setPushFillers] = useState(DEFAULT_PUSH_FILLERS);
+  const [cleanupLegacy, setCleanupLegacy] = useState(true);
+  const [cleanupUnselected, setCleanupUnselected] = useState(true);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
@@ -44,6 +72,20 @@ export function ChannelsPage() {
       ),
     [jobs],
   );
+
+  /** Per-channel generate job badge: generating wins over in queue. */
+  const generateJobBadgeByChannel = useMemo(() => {
+    const map = new Map<string, 'generating' | 'queued'>();
+    for (const job of jobs) {
+      if ((job.kind ?? 'generate') !== 'generate') continue;
+      if (job.status === 'running' || job.status === 'late') {
+        map.set(job.channelNumber, 'generating');
+      } else if (job.status === 'queued' && map.get(job.channelNumber) !== 'generating') {
+        map.set(job.channelNumber, 'queued');
+      }
+    }
+    return map;
+  }, [jobs]);
 
   const refreshChannels = useCallback(async () => {
     try {
@@ -152,17 +194,26 @@ export function ChannelsPage() {
     }
   }
 
-  async function push() {
-    if (!window.confirm(
-      'Push will back up ersatztv.sqlite3, then write fillers/schedules and reset classic playouts for enabled channels.\n\n' +
-        'Generation jobs will pause until push finishes. Continue?',
-    )) {
+  function openPushDialog() {
+    setPushFillers({ ...DEFAULT_PUSH_FILLERS });
+    setCleanupLegacy(true);
+    setCleanupUnselected(true);
+    setPushDialogOpen(true);
+  }
+
+  async function confirmPush() {
+    const fillerTypes = FILLER_PLACEMENTS.filter((p) => pushFillers[p]);
+    const options = { fillerTypes, cleanupLegacy, cleanupUnselected };
+    if (!isPushOptionsActionable(options)) {
+      setError('Select at least one filler type, or enable a cleanup option.');
       return;
     }
+
     setBusy(true);
     setError('');
+    setPushDialogOpen(false);
     try {
-      const { job } = await api.push();
+      const { job } = await api.push(options);
       userExpandedRef.current = true;
       setExpandedJobId(job.id);
       stickToBottomRef.current = true;
@@ -209,13 +260,108 @@ export function ChannelsPage() {
     stickToBottomRef.current = true;
   }
 
+  const selectedPushCount = FILLER_PLACEMENTS.filter((p) => pushFillers[p]).length;
+  const pushActionable = isPushOptionsActionable({
+    fillerTypes: FILLER_PLACEMENTS.filter((p) => pushFillers[p]),
+    cleanupLegacy,
+    cleanupUnselected,
+  });
+
   return (
     <div>
+      {pushDialogOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => !busy && setPushDialogOpen(false)}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="push-dialog-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="push-dialog-title">Push to ErsatzTV</h2>
+            <p className="muted">
+              Backs up ersatztv.sqlite3, then wires selected fillers on classic schedules for enabled
+              channels. Generation pauses until push finishes.
+            </p>
+            <fieldset className="filler-type-fieldset">
+              <legend>Filler types</legend>
+              {FILLER_PLACEMENTS.map((placement) => (
+                <label key={placement} className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={pushFillers[placement]}
+                    onChange={(e) =>
+                      setPushFillers((prev) => ({ ...prev, [placement]: e.target.checked }))
+                    }
+                  />
+                  <span>
+                    {FILLER_PLACEMENT_LABELS[placement]}
+                    <span className="muted"> · schedule {placement}-roll</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+            <fieldset className="filler-type-fieldset">
+              <legend>Cleanup</legend>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={cleanupLegacy}
+                  onChange={(e) => setCleanupLegacy(e.target.checked)}
+                />
+                <div className="label-text">
+                  Remove legacy untyped fillers
+                  <span className="muted">Promo Generator - Next - ChannelName</span>
+                </div>
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={cleanupUnselected}
+                  onChange={(e) => setCleanupUnselected(e.target.checked)}
+                />
+                <div className="label-text">
+                  Remove unselected typed fillers
+                  <span className="muted">clear slots + delete unused presets</span>
+                </div>
+              </label>
+            </fieldset>
+            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+              Typed names look like <code>Promo Generator - Next - Pre - ChannelName</code>.
+              Select no types and enable “Remove unselected” to strip all typed promo fillers.
+            </p>
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => setPushDialogOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="success"
+                disabled={busy || !pushActionable}
+                onClick={() => void confirmPush()}
+              >
+                {selectedPushCount > 0
+                  ? `Push (${selectedPushCount})`
+                  : cleanupLegacy || cleanupUnselected
+                    ? 'Cleanup'
+                    : 'Push'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="panel">
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div>
             <h1>Channels</h1>
-            <p className="muted">Preview next items, generate promos, and push pre-roll fillers to ErsatzTV.</p>
+            <p className="muted">Preview next items, generate promos, and push fillers to ErsatzTV.</p>
           </div>
           <div className="row">
             <button className="secondary" disabled={busy} onClick={() => void refreshChannels()}>Refresh</button>
@@ -226,7 +372,7 @@ export function ChannelsPage() {
             >
               Generate all
             </button>
-            <button className="success" disabled={busy || exclusiveActive} onClick={() => void push()}>
+            <button className="success" disabled={busy || exclusiveActive} onClick={openPushDialog}>
               Push to ErsatzTV
             </button>
             <button
@@ -360,10 +506,19 @@ export function ChannelsPage() {
                 </label>
                 <label>
                   Language
-                  <input
-                    value={ch.language}
+                  <select
+                    value={languageSelectValue(ch.language)}
                     onChange={(e) => void patchChannel(ch.number, { language: e.target.value })}
-                  />
+                  >
+                    {!KNOWN_LANGUAGE_CODES.has(languageSelectValue(ch.language)) && ch.language && (
+                      <option value={ch.language}>{ch.language}</option>
+                    )}
+                    {CHANNEL_LANGUAGES.map((lang) => (
+                      <option key={lang.code} value={lang.code}>
+                        {lang.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
 
@@ -374,7 +529,9 @@ export function ChannelsPage() {
                 <div className="muted">Next regen by {new Date(ch.nextRegenAt).toLocaleString()}</div>
               )}
 
-              <h3 style={{ fontSize: 14, marginTop: 4 }}>Next 3</h3>
+              <h3 style={{ fontSize: 14, marginTop: 4 }}>
+                Next {ch.nextItems.length || 'items'}
+              </h3>
               <ul className="item-list">
                 {ch.nextItems.length === 0 && <li className="muted">No upcoming items</li>}
                 {ch.nextItems.map((item) => (
@@ -407,6 +564,12 @@ export function ChannelsPage() {
                 >
                   Generate
                 </button>
+                {generateJobBadgeByChannel.get(ch.number) === 'generating' && (
+                  <span className="badge warn">generating</span>
+                )}
+                {generateJobBadgeByChannel.get(ch.number) === 'queued' && (
+                  <span className="badge">in queue</span>
+                )}
                 <span className={`badge ${ch.promoExists ? 'ok' : 'warn'}`}>
                   {ch.promoExists ? 'promo ready' : 'missing promo'}
                 </span>

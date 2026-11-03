@@ -4,6 +4,7 @@ import {
   AppSettings,
   SettingsCheck,
   ValidateSettingsResult,
+  isPromoItemCount,
   parseResolution,
 } from '@promo/shared';
 import { EtvApiClient } from '../ersatztv/api.js';
@@ -166,6 +167,96 @@ export async function validateSettings(settings: AppSettings): Promise<ValidateS
       leadOk ? `${settings.regenLeadMinutes} min` : 'Must be ≥ 0',
     ),
   );
+
+  checks.push(
+    check(
+      'voiceProvider',
+      'Voice provider',
+      true,
+      settings.voiceEnabled
+        ? `${settings.voiceProvider}${settings.piperUrl.trim() ? ` · Piper ${settings.piperUrl.trim()}` : ''}`
+        : 'Voice-over disabled',
+    ),
+  );
+
+  const pauseOk =
+    Number.isFinite(settings.voicePauseMs) && settings.voicePauseMs >= 0;
+  checks.push(
+    check(
+      'voicePauseMs',
+      'Voice pause',
+      pauseOk,
+      pauseOk ? `${settings.voicePauseMs} ms` : 'Must be ≥ 0',
+    ),
+  );
+
+  const timeoutOk =
+    Number.isFinite(settings.ttsTimeoutMs) && settings.ttsTimeoutMs >= 1000;
+  checks.push(
+    check(
+      'ttsTimeoutMs',
+      'TTS timeout',
+      timeoutOk,
+      timeoutOk ? `${settings.ttsTimeoutMs} ms` : 'Must be ≥ 1000',
+    ),
+  );
+
+  const itemCountOk = isPromoItemCount(settings.promoItemCount);
+  checks.push(
+    check(
+      'promoItemCount',
+      'Promo items',
+      itemCountOk,
+      itemCountOk
+        ? `${settings.promoItemCount} → ${settings.promoItemCount * 10}s`
+        : 'Must be 1, 2, or 3',
+    ),
+  );
+
+  const sourceVolOk =
+    Number.isFinite(settings.sourceAudioVolume) &&
+    settings.sourceAudioVolume >= 0 &&
+    settings.sourceAudioVolume <= 100;
+  checks.push(
+    check(
+      'sourceAudioVolume',
+      'Original item audio',
+      sourceVolOk,
+      sourceVolOk
+        ? settings.sourceAudioVolume <= 0
+          ? 'Skipped (0)'
+          : `${Math.round(settings.sourceAudioVolume)}%` +
+            (settings.sourceAudioAfterVoice ? ' · after VO' : ' · under VO')
+        : 'Must be 0–100',
+    ),
+  );
+
+  if (settings.voiceEnabled && settings.voiceProvider === 'piper') {
+    const piperOk = Boolean(settings.piperUrl.trim());
+    checks.push(
+      check(
+        'piperUrl',
+        'Piper URL',
+        piperOk,
+        piperOk ? settings.piperUrl.trim() : 'Required when voice provider is Piper',
+      ),
+    );
+  } else if (settings.piperUrl.trim()) {
+    try {
+      const url = new URL(settings.piperUrl.trim());
+      checks.push(
+        check('piperUrl', 'Piper URL', true, url.toString()),
+      );
+    } catch {
+      checks.push(check('piperUrl', 'Piper URL', false, 'Invalid URL'));
+    }
+  }
+
+  if (settings.voiceEnabled && settings.voiceProvider === 'sapi' && process.platform !== 'win32') {
+    checks.push(
+      check('voiceProvider', 'Windows SAPI', false, 'SAPI is only available on Windows'),
+    );
+  }
 
   try {
     const bins = resolveFfmpegBinaries();

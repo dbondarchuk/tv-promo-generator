@@ -10,6 +10,51 @@ export type VideoCodec = 'H264' | 'Hevc';
 
 export type VaapiDriver = 'Default' | 'iHD' | 'i965' | 'RadeonSI' | 'Nouveau';
 
+/** Voice-over detail for TV episodes. */
+export const SHOW_VOICE_DETAILS = [
+  'show',
+  'show_episode',
+  'show_season_episode',
+  'show_season_name',
+  'show_season_episode_name',
+] as const;
+export type ShowVoiceDetail = (typeof SHOW_VOICE_DETAILS)[number];
+
+export const SHOW_VOICE_DETAIL_LABELS: Record<ShowVoiceDetail, string> = {
+  show: 'Show name only',
+  show_episode: 'Show + episode name',
+  show_season_episode: 'Show + season + episode',
+  show_season_name: 'Show + season + episode name',
+  show_season_episode_name: 'Show + season + episode + episode name',
+};
+
+export function isShowVoiceDetail(value: unknown): value is ShowVoiceDetail {
+  return typeof value === 'string' && (SHOW_VOICE_DETAILS as readonly string[]).includes(value);
+}
+
+/** TTS engine preference. `auto` tries Piper → Edge → Windows SAPI. */
+export const VOICE_PROVIDERS = ['auto', 'piper', 'edge', 'sapi'] as const;
+export type VoiceProvider = (typeof VOICE_PROVIDERS)[number];
+
+export const VOICE_PROVIDER_LABELS: Record<VoiceProvider, string> = {
+  auto: 'Auto (Piper → Edge → SAPI)',
+  piper: 'Piper (Wyoming) only',
+  edge: 'Edge TTS only',
+  sapi: 'Windows SAPI only',
+};
+
+export function isVoiceProvider(value: unknown): value is VoiceProvider {
+  return typeof value === 'string' && (VOICE_PROVIDERS as readonly string[]).includes(value);
+}
+
+/** Number of next-items featured in a promo (duration = count × 10s). */
+export const PROMO_ITEM_COUNTS = [1, 2, 3] as const;
+export type PromoItemCount = (typeof PROMO_ITEM_COUNTS)[number];
+
+export function isPromoItemCount(value: unknown): value is PromoItemCount {
+  return value === 1 || value === 2 || value === 3;
+}
+
 export interface AppSettings {
   etvUrl: string;
   etvApiKey: string;
@@ -35,6 +80,43 @@ export interface AppSettings {
   regenLeadMinutes: number;
   /** IANA timezone for on-screen / VO start times (e.g. America/New_York). Empty = process default. */
   timeZone: string;
+  /**
+   * When true, lower-third bar stays left and spans nearly the full frame width.
+   * When false (default), the bar tracks the focused 50% panel as items change.
+   */
+  lowerThirdFullWidth: boolean;
+  /**
+   * How many upcoming items to feature in the promo (1 → 10s, 2 → 20s, 3 → 30s).
+   */
+  promoItemCount: PromoItemCount;
+  /** How much episode detail to speak after the show name (movies stay title-only). */
+  showVoiceDetail: ShowVoiceDetail;
+  /** Which TTS engine(s) to use. */
+  voiceProvider: VoiceProvider;
+  /** Wyoming Piper base URL (e.g. http://192.168.0.151:10200). */
+  piperUrl: string;
+  /** Default Piper voice when no language-specific override is set. */
+  piperVoice: string;
+  /** Per-language Piper voice overrides (keys are channel language codes, e.g. en, uk). */
+  piperVoiceByLanguage: Record<string, string>;
+  /** Optional default Piper speaker id. */
+  piperSpeaker: string;
+  /** Per-language Piper speaker overrides. */
+  piperSpeakerByLanguage: Record<string, string>;
+  /** Silence between cue and title (ms). */
+  voicePauseMs: number;
+  /** Per synthesis attempt timeout (ms). */
+  ttsTimeoutMs: number;
+  /**
+   * Volume of original clip audio in the promo (0–100).
+   * 0 = skip/mute source audio (voice-over only when enabled).
+   */
+  sourceAudioVolume: number;
+  /**
+   * When true and sourceAudioVolume > 0, keep original audio muted until
+   * each item's voice-over finishes (stays in sync with the video window).
+   */
+  sourceAudioAfterVoice: boolean;
 }
 
 export interface ChannelOverride {
@@ -63,9 +145,61 @@ export interface ScheduleItemPreview {
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'late';
 
+/** Languages with voice/overlay templates (canonical codes). */
+export const CHANNEL_LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'it', label: 'Italian' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'nl', label: 'Dutch' },
+  { code: 'pl', label: 'Polish' },
+  { code: 'ru', label: 'Russian' },
+  { code: 'uk', label: 'Ukrainian' },
+  { code: 'ja', label: 'Japanese' },
+  { code: 'zh', label: 'Chinese' },
+  { code: 'ko', label: 'Korean' },
+] as const;
+
+export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]['code'];
+
 export type JobKind = 'generate' | 'push' | 'rollback';
 
 export type JobLogLevel = 'info' | 'warn' | 'error';
+
+/** Classic-schedule filler slots we can wire on push. */
+export const FILLER_PLACEMENTS = ['pre', 'middle', 'post', 'tail'] as const;
+export type FillerPlacement = (typeof FILLER_PLACEMENTS)[number];
+
+export const FILLER_PLACEMENT_LABELS: Record<FillerPlacement, string> = {
+  pre: 'Pre',
+  middle: 'Middle',
+  post: 'Post',
+  tail: 'Tail',
+};
+
+export function isFillerPlacement(value: unknown): value is FillerPlacement {
+  return typeof value === 'string' && (FILLER_PLACEMENTS as readonly string[]).includes(value);
+}
+
+/** Options for Push to ErsatzTV (from the push modal). */
+export interface PushOptions {
+  fillerTypes: FillerPlacement[];
+  /** Remove untyped legacy promo fillers (`Promo Generator - Next - {channel}`). */
+  cleanupLegacy: boolean;
+  /**
+   * Clear typed promo fillers for slots that are not selected, and delete those
+   * presets when unused. With zero selected types, removes all typed promo fillers.
+   */
+  cleanupUnselected: boolean;
+}
+
+export function isPushOptionsActionable(options: PushOptions): boolean {
+  return (
+    options.fillerTypes.length > 0 || options.cleanupLegacy || options.cleanupUnselected
+  );
+}
 
 export interface JobLogEntry {
   at: string;
@@ -87,6 +221,8 @@ export interface JobInfo {
   late?: boolean;
   /** Set for rollback jobs — ErsatzTV backup id to restore. */
   backupId?: string;
+  /** Set for push jobs. */
+  pushOptions?: PushOptions;
   logs: JobLogEntry[];
 }
 
@@ -113,7 +249,8 @@ export interface PushChannelResult {
   channelName: string;
   ok: boolean;
   message: string;
-  replacedPreRoll?: string;
+  /** Human-readable notes about fillers set/cleared on the schedule. */
+  scheduleNotes?: string;
 }
 
 export interface EtvBackupInfo {
@@ -172,6 +309,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voiceEnabled: true,
   regenLeadMinutes: 3,
   timeZone: '',
+  lowerThirdFullWidth: false,
+  promoItemCount: 3,
+  showVoiceDetail: 'show_season_episode_name',
+  voiceProvider: 'auto',
+  piperUrl: '',
+  piperVoice: '',
+  piperVoiceByLanguage: {},
+  piperSpeaker: '',
+  piperSpeakerByLanguage: {},
+  voicePauseMs: 450,
+  ttsTimeoutMs: 20_000,
+  sourceAudioVolume: 0,
+  sourceAudioAfterVoice: true,
 };
 
 export function parseResolution(resolution: string): { width: number; height: number } {

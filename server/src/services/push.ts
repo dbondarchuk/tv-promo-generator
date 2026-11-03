@@ -1,14 +1,20 @@
 import path from 'node:path';
 import {
   AppSettings,
+  FILLER_PLACEMENT_LABELS,
+  FillerPlacement,
+  isPushOptionsActionable,
   JobLogLevel,
   PushChannelResult,
+  PushOptions,
   PushResult,
   sanitizeChannelFolderName,
 } from '@promo/shared';
 import { EtvApiClient } from '../ersatztv/api.js';
 import {
+  applyScheduleItemFillers,
   ensurePromoLibrary,
+  FILLER_PLACEMENT_META,
   findMediaItemByFileName,
   findMediaItemByPath,
   getPlayoutForChannel,
@@ -16,7 +22,6 @@ import {
   promoNextNames,
   resetSchemaCache,
   scheduleSharedByOtherChannels,
-  setScheduleItemsPreRoll,
   upsertFillerPresetForCollection,
   upsertManualCollection,
 } from '../ersatztv/db.js';
@@ -72,6 +77,7 @@ async function withWriteDb<T>(
 
 export async function pushToErsatzTv(
   settings: AppSettings,
+  options: PushOptions,
   onProgress: PushProgress = () => undefined,
 ): Promise<PushResult> {
   const progress = (message: string, level: JobLogLevel = 'info') => {
@@ -81,7 +87,25 @@ export async function pushToErsatzTv(
     else log.info(message);
   };
 
+  if (!isPushOptionsActionable(options)) {
+    throw new Error(
+      'Select at least one filler type, or enable a cleanup option',
+    );
+  }
+
+  const fillerTypes = options.fillerTypes;
+  const wireFillers = fillerTypes.length > 0;
+
   resetSchemaCache();
+  progress(
+    wireFillers
+      ? `Filler slots: ${fillerTypes.map((t) => FILLER_PLACEMENT_LABELS[t]).join(', ')}`
+      : 'Filler slots: (none — cleanup only)',
+  );
+  progress(
+    `Cleanup: legacy=${options.cleanupLegacy ? 'yes' : 'no'},` +
+      ` unselected=${options.cleanupUnselected ? 'yes' : 'no'}`,
+  );
   progress('Loading enabled channels');
   const channels = (await loadChannelViews(settings)).filter((c) => c.enabled);
   progress(`Enabled channels: ${channels.length}`);
@@ -93,100 +117,106 @@ export async function pushToErsatzTv(
   const backup = await backupErsatzTvDatabase(settings, 'pre-push');
   progress(`Backup ready: ${backup.id} (${backup.bytes} bytes)`);
 
-  progress(`Ensuring Promo Generator library at ${etvLibraryPath}`);
-  let libraryId: number;
-  try {
-    libraryId = await withWriteDb(settings.etvDatabase, progress, (db) =>
-      ensurePromoLibrary(db, 'Promo Generator', etvLibraryPath).libraryId,
-    );
-    progress(`Library id ${libraryId}`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    progress(message, 'error');
-    return {
-      backup,
-      results: channels.map((c) => ({
-        channelNumber: c.number,
-        channelName: c.name,
-        ok: false,
-        message,
-      })),
-    };
-  }
+  let libraryId: number | undefined;
+  if (wireFillers) {
+    progress(`Ensuring Promo Generator library at ${etvLibraryPath}`);
+    try {
+      libraryId = await withWriteDb(settings.etvDatabase, progress, (db) =>
+        ensurePromoLibrary(db, 'Promo Generator', etvLibraryPath).libraryId,
+      );
+      progress(`Library id ${libraryId}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      progress(message, 'error');
+      return {
+        backup,
+        results: channels.map((c) => ({
+          channelNumber: c.number,
+          channelName: c.name,
+          ok: false,
+          message,
+        })),
+      };
+    }
 
-  try {
-    progress(`Scanning library ${libraryId}`);
-    await api.scanLibrary(libraryId);
-  } catch (err) {
-    const message = `Library scan failed: ${err instanceof Error ? err.message : String(err)}`;
-    progress(message, 'error');
-    return {
-      backup,
-      results: channels.map((c) => ({
-        channelNumber: c.number,
-        channelName: c.name,
-        ok: false,
-        message,
-      })),
-    };
+    try {
+      progress(`Scanning library ${libraryId}`);
+      await api.scanLibrary(libraryId);
+    } catch (err) {
+      const message = `Library scan failed: ${err instanceof Error ? err.message : String(err)}`;
+      progress(message, 'error');
+      return {
+        backup,
+        results: channels.map((c) => ({
+          channelNumber: c.number,
+          channelName: c.name,
+          ok: false,
+          message,
+        })),
+      };
+    }
   }
 
   for (const channel of channels) {
     progress(`Channel ${channel.number} (${channel.name})`);
     const names = promoNextNames(channel.name);
-    const localPath = promoOutputFile(settings.outputPath, channel.name);
-    if (!fileExists(localPath)) {
-      const message = 'Promo file missing; generate it first';
-      progress(`  ${message}`, 'warn');
-      results.push({
-        channelNumber: channel.number,
-        channelName: channel.name,
-        ok: false,
-        message,
-      });
-      continue;
-    }
 
-    const etvFilePath = path.posix.join(
-      etvLibraryPath.replace(/\\/g, '/').replace(/\/+$/, ''),
-      sanitizeChannelFolderName(channel.name),
-      'next-items.mp4',
-    );
-
-    progress(`  Waiting for scan: ${etvFilePath}`);
     let mediaItemId: number | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const rw = openDb(settings.etvDatabase, true);
-      try {
-        const byPath =
-          findMediaItemByPath(rw, etvFilePath) ??
-          findMediaItemByFileName(rw, `${sanitizeChannelFolderName(channel.name)}/next-items.mp4`);
-        if (byPath) {
-          mediaItemId = byPath.mediaItemId;
-          break;
+    if (wireFillers) {
+      const localPath = promoOutputFile(settings.outputPath, channel.name);
+      if (!fileExists(localPath)) {
+        const message = 'Promo file missing; generate it first';
+        progress(`  ${message}`, 'warn');
+        results.push({
+          channelNumber: channel.number,
+          channelName: channel.name,
+          ok: false,
+          message,
+        });
+        continue;
+      }
+
+      const etvFilePath = path.posix.join(
+        etvLibraryPath.replace(/\\/g, '/').replace(/\/+$/, ''),
+        sanitizeChannelFolderName(channel.name),
+        'next-items.mp4',
+      );
+
+      progress(`  Waiting for scan: ${etvFilePath}`);
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const rw = openDb(settings.etvDatabase, true);
+        try {
+          const byPath =
+            findMediaItemByPath(rw, etvFilePath) ??
+            findMediaItemByFileName(rw, `${sanitizeChannelFolderName(channel.name)}/next-items.mp4`);
+          if (byPath) {
+            mediaItemId = byPath.mediaItemId;
+            break;
+          }
+        } finally {
+          rw.close();
         }
-      } finally {
-        rw.close();
+        if (attempt === 0 || (attempt + 1) % 5 === 0) {
+          progress(`  Still waiting for media item (attempt ${attempt + 1}/30)`);
+        }
+        await sleep(2000);
       }
-      if (attempt === 0 || (attempt + 1) % 5 === 0) {
-        progress(`  Still waiting for media item (attempt ${attempt + 1}/30)`);
+
+      if (!mediaItemId) {
+        const message = `Timed out waiting for scan of ${etvFilePath}`;
+        progress(`  ${message}`, 'error');
+        results.push({
+          channelNumber: channel.number,
+          channelName: channel.name,
+          ok: false,
+          message,
+        });
+        continue;
       }
-      await sleep(2000);
+
+      progress(`  Media item ${mediaItemId}`);
     }
 
-    if (!mediaItemId) {
-      const message = `Timed out waiting for scan of ${etvFilePath}`;
-      progress(`  ${message}`, 'error');
-      results.push({
-        channelNumber: channel.number,
-        channelName: channel.name,
-        ok: false,
-        message,
-      });
-      continue;
-    }
-
-    progress(`  Media item ${mediaItemId}`);
     try {
       const applied = await withWriteDb(settings.etvDatabase, progress, (writeDb) => {
         const playout = getPlayoutForChannel(writeDb, channel.number);
@@ -215,24 +245,50 @@ export async function pushToErsatzTv(
           };
         }
 
-        const collection = upsertManualCollection(writeDb, names.collection, mediaItemId!);
-        progress(
-          `  Collection "${names.collection}" id ${collection.id}` +
-            `${collection.created ? ' (created)' : ' (updated)'}`,
-        );
+        const presetIds: Partial<Record<FillerPlacement, number>> = {};
+        if (wireFillers && mediaItemId != null) {
+          const collection = upsertManualCollection(writeDb, names.collection, mediaItemId);
+          progress(
+            `  Collection "${names.collection}" id ${collection.id}` +
+              `${collection.created ? ' (created)' : ' (updated)'}`,
+          );
 
-        const preset = upsertFillerPresetForCollection(writeDb, names.filler, collection.id);
-        progress(
-          `  Filler preset "${names.filler}" id ${preset.id}` +
-            `${preset.created ? ' (created)' : ' (updated)'}`,
-        );
+          for (const placement of fillerTypes) {
+            const meta = FILLER_PLACEMENT_META[placement];
+            const fillerName = names.filler(placement);
+            const preset = upsertFillerPresetForCollection(
+              writeDb,
+              fillerName,
+              collection.id,
+              meta.fillerKind,
+            );
+            presetIds[placement] = preset.id;
+            progress(
+              `  Filler "${fillerName}" (${FILLER_PLACEMENT_LABELS[placement]}) id ${preset.id}` +
+                `${preset.created ? ' (created)' : ' (updated)'}`,
+            );
+          }
+        }
 
-        const schedule = setScheduleItemsPreRoll(writeDb, playout.programScheduleId, preset.id);
-        progress(`  Pre-roll set on ${schedule.updated} schedule item(s)`);
+        const schedule = applyScheduleItemFillers(
+          writeDb,
+          playout.programScheduleId,
+          channel.name,
+          {
+            selected: fillerTypes,
+            presetIds,
+            cleanupLegacy: options.cleanupLegacy,
+            cleanupUnselected: options.cleanupUnselected,
+          },
+        );
+        for (const note of schedule.notes) {
+          progress(`  ${note}`);
+        }
+
         return {
           ok: true as const,
-          updated: schedule.updated,
-          replacedPreRoll: schedule.previousNames.join(', ') || undefined,
+          itemCount: schedule.itemCount,
+          scheduleNotes: schedule.notes.join('; ') || undefined,
         };
       });
 
@@ -251,26 +307,34 @@ export async function pushToErsatzTv(
         progress('  Resetting playout');
         await api.resetPlayout(channel.number);
       } catch (err) {
-        const message = `Collection/filler set, but playout reset failed: ${err instanceof Error ? err.message : String(err)}`;
+        const message = `Schedule updated, but playout reset failed: ${err instanceof Error ? err.message : String(err)}`;
         progress(`  ${message}`, 'error');
         results.push({
           channelNumber: channel.number,
           channelName: channel.name,
           ok: false,
           message,
-          replacedPreRoll: applied.replacedPreRoll,
+          scheduleNotes: applied.scheduleNotes,
         });
         continue;
       }
 
-      const message = `Collection + pre-roll filler wired (${applied.updated} schedule item(s)); playout reset`;
+      const parts: string[] = [];
+      if (wireFillers) {
+        parts.push(
+          `wired ${fillerTypes.map((t) => FILLER_PLACEMENT_LABELS[t]).join('+')} (${applied.itemCount} item(s))`,
+        );
+      }
+      if (options.cleanupLegacy) parts.push('legacy cleanup');
+      if (options.cleanupUnselected) parts.push('unselected cleanup');
+      const message = `${parts.join(' · ') || 'no-op'}; playout reset`;
       progress(`  OK — ${message}`);
       results.push({
         channelNumber: channel.number,
         channelName: channel.name,
         ok: true,
         message,
-        replacedPreRoll: applied.replacedPreRoll,
+        scheduleNotes: applied.scheduleNotes,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

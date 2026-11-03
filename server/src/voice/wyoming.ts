@@ -240,6 +240,7 @@ export async function synthesizeWyoming(
   opts: {
     voice?: string;
     speaker?: string;
+    language?: string;
     timeoutMs?: number;
   } = {},
 ): Promise<WyomingSynthResult> {
@@ -247,10 +248,12 @@ export async function synthesizeWyoming(
   const { host, port } = parseHostPort(urlOrHost);
   return await withSocket(host, port, timeoutMs, async (socket, reader) => {
     const data: Record<string, unknown> = { text };
-    if (opts.voice) {
-      data.voice = opts.speaker
-        ? { name: opts.voice, speaker: opts.speaker }
-        : { name: opts.voice };
+    if (opts.voice || opts.speaker || opts.language) {
+      const voice: Record<string, string> = {};
+      if (opts.voice) voice.name = opts.voice;
+      if (opts.speaker) voice.speaker = opts.speaker;
+      if (opts.language) voice.language = opts.language;
+      data.voice = voice;
     }
     sendEvent(socket, 'synthesize', data);
 
@@ -299,6 +302,7 @@ export async function synthesizeWyomingToWav(
   opts: {
     voice?: string;
     speaker?: string;
+    language?: string;
     timeoutMs?: number;
   } = {},
 ): Promise<WyomingSynthResult> {

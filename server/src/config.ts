@@ -2,16 +2,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   AppSettings,
+  CHANNEL_LANGUAGES,
   ChannelOverrides,
   DEFAULT_SETTINGS,
   HardwareAcceleration,
+  isPromoItemCount,
+  isShowVoiceDetail,
+  isVoiceProvider,
+  ShowVoiceDetail,
   VaapiDriver,
   VideoCodec,
+  VoiceProvider,
 } from '@promo/shared';
 import { loadEnv } from './env.js';
 
 const SETTINGS_FILE = 'settings.json';
 const CHANNELS_FILE = 'channels.json';
+
+/** Older settings.json fields before piperVoiceByLanguage. */
+type LegacyVoiceFields = {
+  piperVoiceEn?: string;
+  piperVoiceUk?: string;
+};
 
 loadEnv();
 
@@ -42,6 +54,46 @@ function pick<T>(fileVal: T | undefined, envVal: T | undefined, fallback: T): T 
   return fileVal !== undefined ? fileVal : envVal !== undefined ? envVal : fallback;
 }
 
+function cleanLangMap(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const code = key.trim().toLowerCase();
+    if (!code || typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed) out[code] = trimmed;
+  }
+  return out;
+}
+
+/** Env map for PIPER_VOICE_<LANG>, then file map (and legacy en/uk fields) wins. */
+function resolvePiperVoiceByLanguage(fromFile: Partial<AppSettings> & LegacyVoiceFields): Record<string, string> {
+  const fromEnv: Record<string, string> = {};
+  for (const lang of CHANNEL_LANGUAGES) {
+    const value = env(`PIPER_VOICE_${lang.code.toUpperCase()}`);
+    if (value) fromEnv[lang.code] = value;
+  }
+
+  const fromLegacy: Record<string, string> = {};
+  if (fromFile.piperVoiceEn?.trim()) fromLegacy.en = fromFile.piperVoiceEn.trim();
+  if (fromFile.piperVoiceUk?.trim()) fromLegacy.uk = fromFile.piperVoiceUk.trim();
+
+  const fromMap = cleanLangMap(fromFile.piperVoiceByLanguage);
+
+  // defaults < env < legacy file fields < file map
+  return { ...fromEnv, ...fromLegacy, ...fromMap };
+}
+
+/** Env map for PIPER_SPEAKER_<LANG>, then file map wins. */
+function resolvePiperSpeakerByLanguage(fromFile: Partial<AppSettings>): Record<string, string> {
+  const fromEnv: Record<string, string> = {};
+  for (const lang of CHANNEL_LANGUAGES) {
+    const value = env(`PIPER_SPEAKER_${lang.code.toUpperCase()}`);
+    if (value) fromEnv[lang.code] = value;
+  }
+  return { ...fromEnv, ...cleanLangMap(fromFile.piperSpeakerByLanguage) };
+}
+
 export function resolveConfigPath(): string {
   return path.resolve(env('CONFIG_PATH') ?? DEFAULT_SETTINGS.configPath);
 }
@@ -50,10 +102,10 @@ export function loadSettings(): AppSettings {
   const configPath = resolveConfigPath();
   ensureDir(configPath);
   const filePath = path.join(configPath, SETTINGS_FILE);
-  let fromFile: Partial<AppSettings> = {};
+  let fromFile: Partial<AppSettings> & LegacyVoiceFields = {};
   if (fs.existsSync(filePath)) {
     try {
-      fromFile = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<AppSettings>;
+      fromFile = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Partial<AppSettings> & LegacyVoiceFields;
     } catch {
       fromFile = {};
     }
@@ -106,7 +158,63 @@ export function loadSettings(): AppSettings {
       DEFAULT_SETTINGS.regenLeadMinutes,
     ),
     timeZone: pick(fromFile.timeZone, env('TIME_ZONE') ?? env('TZ'), DEFAULT_SETTINGS.timeZone),
+    lowerThirdFullWidth: pick(
+      fromFile.lowerThirdFullWidth,
+      envBool('LOWER_THIRD_FULL_WIDTH'),
+      DEFAULT_SETTINGS.lowerThirdFullWidth,
+    ),
+    promoItemCount: pick(
+      isPromoItemCount(fromFile.promoItemCount) ? fromFile.promoItemCount : undefined,
+      (() => {
+        const raw = envInt('PROMO_ITEM_COUNT');
+        return isPromoItemCount(raw) ? raw : undefined;
+      })(),
+      DEFAULT_SETTINGS.promoItemCount,
+    ),
+    showVoiceDetail: pick(
+      isShowVoiceDetail(fromFile.showVoiceDetail) ? fromFile.showVoiceDetail : undefined,
+      (() => {
+        const raw = env('SHOW_VOICE_DETAIL');
+        return isShowVoiceDetail(raw) ? (raw as ShowVoiceDetail) : undefined;
+      })(),
+      DEFAULT_SETTINGS.showVoiceDetail,
+    ),
+    voiceProvider: pick(
+      isVoiceProvider(fromFile.voiceProvider) ? fromFile.voiceProvider : undefined,
+      (() => {
+        const raw = env('VOICE_PROVIDER');
+        return isVoiceProvider(raw) ? (raw as VoiceProvider) : undefined;
+      })(),
+      DEFAULT_SETTINGS.voiceProvider,
+    ),
+    piperUrl: pick(
+      fromFile.piperUrl,
+      env('PIPER_URL') ?? env('WYOMING_PIPER_URL'),
+      DEFAULT_SETTINGS.piperUrl,
+    ),
+    piperVoice: pick(fromFile.piperVoice, env('PIPER_VOICE'), DEFAULT_SETTINGS.piperVoice),
+    piperVoiceByLanguage: resolvePiperVoiceByLanguage(fromFile),
+    piperSpeaker: pick(fromFile.piperSpeaker, env('PIPER_SPEAKER'), DEFAULT_SETTINGS.piperSpeaker),
+    piperSpeakerByLanguage: resolvePiperSpeakerByLanguage(fromFile),
+    voicePauseMs: pick(fromFile.voicePauseMs, envInt('VOICE_PAUSE_MS'), DEFAULT_SETTINGS.voicePauseMs),
+    ttsTimeoutMs: pick(fromFile.ttsTimeoutMs, envInt('TTS_TIMEOUT_MS'), DEFAULT_SETTINGS.ttsTimeoutMs),
+    sourceAudioVolume: pick(
+      fromFile.sourceAudioVolume,
+      envInt('SOURCE_AUDIO_VOLUME'),
+      DEFAULT_SETTINGS.sourceAudioVolume,
+    ),
+    sourceAudioAfterVoice: pick(
+      fromFile.sourceAudioAfterVoice,
+      envBool('SOURCE_AUDIO_AFTER_VOICE'),
+      DEFAULT_SETTINGS.sourceAudioAfterVoice,
+    ),
   };
+
+  if (!Number.isFinite(merged.sourceAudioVolume)) {
+    merged.sourceAudioVolume = DEFAULT_SETTINGS.sourceAudioVolume;
+  } else {
+    merged.sourceAudioVolume = Math.max(0, Math.min(100, Math.round(merged.sourceAudioVolume)));
+  }
 
   if (!merged.etvLibraryPath) {
     merged.etvLibraryPath = merged.outputPath;
@@ -120,8 +228,12 @@ export function loadSettings(): AppSettings {
 export function saveSettings(settings: AppSettings): AppSettings {
   const configPath = resolveConfigPath();
   ensureDir(configPath);
+  const sourceAudioVolume = Number.isFinite(settings.sourceAudioVolume)
+    ? Math.max(0, Math.min(100, Math.round(settings.sourceAudioVolume)))
+    : DEFAULT_SETTINGS.sourceAudioVolume;
   const toStore: AppSettings = {
     ...settings,
+    sourceAudioVolume,
     configPath,
     outputPath: path.resolve(settings.outputPath),
     cachePath: path.resolve(settings.cachePath),

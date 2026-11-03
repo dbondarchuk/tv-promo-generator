@@ -90,6 +90,22 @@ export async function extractDominantColor(imagePathOrBuffer: string | Buffer): 
   return toHex(darkened.r, darkened.g, darkened.b);
 }
 
+/** Resolve relative / host-local tvg-logo URLs against the ErsatzTV base URL. */
+export function resolveLogoUrl(logoUrl: string, etvBaseUrl: string): string {
+  const trimmed = logoUrl.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const base = etvBaseUrl.endsWith('/') ? etvBaseUrl : `${etvBaseUrl}/`;
+    return new URL(trimmed, base).href;
+  } catch {
+    return trimmed;
+  }
+}
+
+export function logoCacheFile(cachePath: string, channelNumber: string): string {
+  return path.join(cachePath, 'logos', `${channelNumber}.png`);
+}
+
 export async function downloadLogo(url: string, destDir: string, key: string): Promise<string | undefined> {
   try {
     fs.mkdirSync(destDir, { recursive: true });

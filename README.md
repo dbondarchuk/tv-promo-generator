@@ -1,6 +1,6 @@
 # ErsatzTV Promo Generator
 
-Generate **30-second “next items” promos** for [ErsatzTV](https://ersatztv.org/) channels: animated triptych video, lower-third titles, optional multilingual voice-over, auto-regen before the current item ends, and one-click **Push** into ErsatzTV as pre-roll fillers.
+Generate **“next items” promos** (10 / 20 / 30 seconds for 1 / 2 / 3 items) for [ErsatzTV](https://ersatztv.org/) channels: animated panel video, lower-third titles, optional multilingual voice-over, auto-regen before the current item ends, and one-click **Push** into ErsatzTV as pre-roll fillers.
 
 ```
 ┌────────────────────┬──────────┬──────────┐
@@ -27,7 +27,7 @@ Each promo is written as `{output}/{channel}/next-items.mp4`.
 
 | Area | What you get |
 |---|---|
-| **Video** | Single 30s encode: three upcoming primary items, animated 50/25/25 → 25/50/25 → 25/25/50 layout |
+| **Video** | 1–3 upcoming primary items (10s each): full-frame, dual 75/25, or animated triptych 50/25/25 |
 | **Graphics** | Channel logo, logo-derived color bar, localized “Next / After that” headlines + start time |
 | **Voice** | Piper (Wyoming) preferred; Edge TTS then Windows SAPI fallbacks; pause between cue and title |
 | **Automation** | Scheduler regenerates when the current item is within `REGEN_LEAD_MINUTES` of ending |
@@ -95,11 +95,12 @@ Per-channel language drives overlays and VO (e.g. `uk` → Ukrainian templates /
 
 ## Promo layout & audio
 
-- **30 seconds**, three phases (~10s each) with **1.5s** smooth width transitions.
-- Focused panel is **50%**; the other two stay **25%** (first frame before they play, last frame after).
-- Lower-third follows the focused panel: `Next: {title}` / `After that: {title}`, episode line, start time.
+- **Item count** (`PROMO_ITEM_COUNT` / Settings): **1 → 10s**, **2 → 20s**, **3 → 30s** (default).
+- Each phase is ~10s with **1.5s** smooth transitions between items (2- and 3-item layouts).
+- **1 item:** full-frame. **2 items:** focused **75%** / other **25%**. **3 items:** focused **50%**, others **25%**.
+- Lower-third follows the focused panel (or full width): `Next: {title}` / `After that: {title}`, episode line, start time.
 - Movie years like `(2021)` are stripped from display and speech.
-- Source audio is **muted**; only VO (or silence) is used.
+- Optional original-item audio (volume + after-VO gate); otherwise VO / silence only.
 
 ### Voice-over
 
@@ -219,6 +220,9 @@ Copy [`.env.example`](.env.example) → `.env`. Env vars bootstrap defaults; val
 | `HARDWARE_ACCELERATION` | `None` \| `Nvenc` \| `Qsv` \| `Vaapi` \| `Amf` \| `VideoToolbox` |
 | `VIDEO_CODEC` | `H264` or `Hevc` |
 | `VIDEO_BITRATE` / `AUDIO_BITRATE` | kbps |
+| `PROMO_ITEM_COUNT` | `1` / `2` / `3` upcoming items (10s / 20s / 30s) |
+| `SOURCE_AUDIO_VOLUME` | Original clip audio in promo, `0`–`100` (`0` = skip) |
+| `SOURCE_AUDIO_AFTER_VOICE` | `true` = unmute original audio only after each VO ends |
 | `RESOLUTION` | e.g. `1920x1080` |
 | `VIDEO_PRESET` / `VIDEO_PROFILE` | Encoder preset / profile |
 | `VAAPI_DEVICE` / `VAAPI_DRIVER` | VAAPI only |

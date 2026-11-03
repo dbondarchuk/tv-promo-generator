@@ -1,7 +1,15 @@
 import express, { Router } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
-import { AppSettings, sanitizeChannelFolderName } from '@promo/shared';
+import {
+  AppSettings,
+  FILLER_PLACEMENTS,
+  FillerPlacement,
+  isFillerPlacement,
+  isPushOptionsActionable,
+  PushOptions,
+  sanitizeChannelFolderName,
+} from '@promo/shared';
 import {
   clearSavedSettings,
   hasSavedSettings,
@@ -10,7 +18,12 @@ import {
   loadChannelOverrides,
   updateChannelOverride,
 } from './config.js';
+import { downloadLogo, logoCacheFile, resolveLogoUrl } from './color.js';
 import { invalidateChannelCaches, loadChannelViews } from './services/channels.js';
+import {
+  ensureConfiguredPiperVoices,
+  invalidatePiperVoiceCache,
+} from './voice/tts.js';
 import {
   backupErsatzTvDatabase,
   getLatestPushBackup,
@@ -18,6 +31,8 @@ import {
 } from './services/etv-backup.js';
 import { JobQueue } from './services/jobs.js';
 import { validateSettings } from './services/validate-settings.js';
+import { EtvApiClient } from './ersatztv/api.js';
+import { parseM3u } from './ersatztv/m3u.js';
 import { createLogger } from './util/log.js';
 
 const log = createLogger('http');
@@ -60,14 +75,32 @@ export function createRouter(opts: {
     const next = saveSettings({ ...opts.getSettings(), ...req.body });
     opts.setSettings(next);
     invalidateChannelCaches();
+    invalidatePiperVoiceCache();
     log.info('settings updated');
     res.json(next);
+
+    // Wyoming Piper downloads voice models on first synthesize — kick that off
+    // after save so overrides are ready before generate jobs need them.
+    if (next.voiceEnabled && (next.voiceProvider === 'auto' || next.voiceProvider === 'piper')) {
+      void ensureConfiguredPiperVoices(next).then((results) => {
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length === 0 && results.length > 0) {
+          log.info('piper voices ready', { voices: results.map((r) => r.voice) });
+        } else if (failed.length > 0) {
+          log.warn('piper voice download issues', {
+            ok: results.filter((r) => r.ok).map((r) => r.voice),
+            failed: failed.map((r) => `${r.voice}: ${r.error}`),
+          });
+        }
+      });
+    }
   });
 
   router.delete('/settings', (_req, res) => {
     const next = clearSavedSettings();
     opts.setSettings(next);
     invalidateChannelCaches();
+    invalidatePiperVoiceCache();
     log.info('saved settings cleared; using env/defaults');
     res.json(next);
   });
@@ -221,10 +254,39 @@ export function createRouter(opts: {
     req.on('close', close);
   });
 
-  router.post('/push', (_req, res) => {
+  router.post('/push', (req, res) => {
     try {
-      log.info('enqueue push to ErsatzTV');
-      const job = opts.jobs.enqueuePush();
+      const raw = req.body?.fillerTypes;
+      if (raw != null && !Array.isArray(raw)) {
+        res.status(400).json({ error: 'fillerTypes must be an array' });
+        return;
+      }
+      const fillerTypes: FillerPlacement[] = [];
+      for (const value of raw ?? []) {
+        if (!isFillerPlacement(value)) {
+          res.status(400).json({
+            error: `Invalid filler type "${String(value)}"; expected: ${FILLER_PLACEMENTS.join(', ')}`,
+          });
+          return;
+        }
+        if (!fillerTypes.includes(value)) fillerTypes.push(value);
+      }
+
+      const pushOptions: PushOptions = {
+        fillerTypes,
+        cleanupLegacy: Boolean(req.body?.cleanupLegacy),
+        cleanupUnselected: Boolean(req.body?.cleanupUnselected),
+      };
+      if (!isPushOptionsActionable(pushOptions)) {
+        res.status(400).json({
+          error:
+            'Select at least one filler type, or enable cleanupLegacy / cleanupUnselected',
+        });
+        return;
+      }
+
+      log.info('enqueue push to ErsatzTV', pushOptions);
+      const job = opts.jobs.enqueuePush(pushOptions);
       res.json({ job });
     } catch (err) {
       log.error('POST /push failed', err instanceof Error ? err.message : String(err));
@@ -237,6 +299,47 @@ export function createRouter(opts: {
 
 export function createMediaRouter(getSettings: () => AppSettings): Router {
   const router = Router();
+
+  router.get('/logos/:channelNumber', async (req, res) => {
+    try {
+      const settings = getSettings();
+      const channelNumber = sanitizeChannelFolderName(decodeURIComponent(req.params.channelNumber));
+      const cached = logoCacheFile(settings.cachePath, channelNumber);
+      const cacheRoot = path.resolve(settings.cachePath, 'logos');
+      const resolvedCache = path.resolve(cached);
+
+      if (!resolvedCache.startsWith(cacheRoot)) {
+        res.status(400).end();
+        return;
+      }
+
+      if (!fs.existsSync(resolvedCache)) {
+        const api = new EtvApiClient(settings.etvUrl, settings.etvApiKey);
+        const m3u = parseM3u(await api.getM3u());
+        const channel = m3u.find((c) => sanitizeChannelFolderName(c.number) === channelNumber);
+        if (!channel?.logoUrl) {
+          res.status(404).end();
+          return;
+        }
+        const downloaded = await downloadLogo(
+          resolveLogoUrl(channel.logoUrl, settings.etvUrl),
+          cacheRoot,
+          channelNumber,
+        );
+        if (!downloaded) {
+          res.status(404).end();
+          return;
+        }
+      }
+
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.sendFile(resolvedCache);
+    } catch (err) {
+      log.error('GET /media/logos failed', err instanceof Error ? err.message : String(err));
+      res.status(500).end();
+    }
+  });
+
   router.get('/:channelFolder/next-items.mp4', (req, res) => {
     const settings = getSettings();
     const folder = sanitizeChannelFolderName(decodeURIComponent(req.params.channelFolder));

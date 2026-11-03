@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { AppSettings, JobInfo, JobKind, JobLogEntry, JobLogLevel } from '@promo/shared';
+import {
+  AppSettings,
+  JobInfo,
+  JobKind,
+  JobLogEntry,
+  JobLogLevel,
+  PushOptions,
+} from '@promo/shared';
 import { promoOutputFile } from '../util/paths.js';
 import { createLogger } from '../util/log.js';
 import { renderPromo } from '../promo/render.js';
@@ -125,11 +132,12 @@ export class JobQueue {
     return this.publicJob(job);
   }
 
-  enqueuePush(): JobInfo {
+  enqueuePush(pushOptions: PushOptions): JobInfo {
     return this.enqueueBlocking({
       kind: 'push',
       channelNumber: 'push',
       channelName: 'Push to ErsatzTV',
+      pushOptions,
       pauseMessage: 'Paused — waiting for Push to ErsatzTV to finish',
     });
   }
@@ -149,6 +157,7 @@ export class JobQueue {
     channelNumber: string;
     channelName: string;
     backupId?: string;
+    pushOptions?: PushOptions;
     pauseMessage: string;
   }): JobInfo {
     const existing = [...this.jobs.values()].find(
@@ -168,6 +177,7 @@ export class JobQueue {
       status: 'queued',
       queuedAt: new Date().toISOString(),
       backupId: opts.backupId,
+      pushOptions: opts.pushOptions,
       logs: [],
       priority: 0,
     };
@@ -175,11 +185,22 @@ export class JobQueue {
     this.queue.push(id);
     this.queue.sort((a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority);
 
+    const pushBits: string[] = [];
+    if (opts.pushOptions) {
+      pushBits.push(
+        opts.pushOptions.fillerTypes.length
+          ? `fillers: ${opts.pushOptions.fillerTypes.join(', ')}`
+          : 'fillers: none',
+      );
+      if (opts.pushOptions.cleanupLegacy) pushBits.push('cleanup legacy');
+      if (opts.pushOptions.cleanupUnselected) pushBits.push('cleanup unselected');
+    }
     this.appendLog(
       id,
       'info',
       `Queued · generation jobs will pause until this finishes` +
-        (opts.backupId ? ` · backup ${opts.backupId}` : ''),
+        (opts.backupId ? ` · backup ${opts.backupId}` : '') +
+        (pushBits.length ? ` · ${pushBits.join(' · ')}` : ''),
       false,
     );
     for (const other of this.jobs.values()) {
@@ -334,7 +355,12 @@ export class JobQueue {
       this.appendLog(job.id, level, message);
     };
 
-    const result = await pushToErsatzTv(settings, onProgress);
+    const pushOptions = job.pushOptions ?? {
+      fillerTypes: [],
+      cleanupLegacy: false,
+      cleanupUnselected: false,
+    };
+    const result = await pushToErsatzTv(settings, pushOptions, onProgress);
     const failed = result.results.filter((r) => !r.ok);
     const ok = result.results.length - failed.length;
     job.finishedAt = new Date().toISOString();

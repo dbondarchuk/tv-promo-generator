@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { buildVoiceLine, VoiceLineInput } from './templates.js';
+import { AppSettings, VoiceProvider } from '@promo/shared';
+import { buildVoiceLine, getTemplate, normalizeLanguage, VoiceLineInput } from './templates.js';
 import {
   listWyomingVoices,
   pickPiperVoice,
@@ -12,6 +14,9 @@ import {
 import { runFfmpeg } from '../ffmpeg/run.js';
 import { createLogger } from '../util/log.js';
 
+/** Piper may need to download a voice model on first use (often >20s). */
+const PIPER_DOWNLOAD_TIMEOUT_MS = 180_000;
+
 export interface VoiceResult {
   filePath?: string;
   text: string;
@@ -20,34 +25,183 @@ export interface VoiceResult {
   error?: string;
 }
 
+interface VoiceRuntime {
+  provider: VoiceProvider;
+  piperUrl?: string;
+  piperVoice?: string;
+  piperVoiceByLanguage: Record<string, string>;
+  piperSpeaker?: string;
+  piperSpeakerByLanguage: Record<string, string>;
+  pauseMs: number;
+  timeoutMs: number;
+}
+
 const log = createLogger('tts');
-const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS ?? 20_000);
-/** Silence between channel cue and show/movie name (ms). */
-const VOICE_PAUSE_MS = Math.max(0, Number(process.env.VOICE_PAUSE_MS ?? 450));
 
 /** After a hard edge-tts failure, skip it for the rest of the process lifetime. */
 let edgeTtsDisabledReason: string | null = null;
-let piperVoicesCache: { at: number; voices: WyomingVoice[] } | null = null;
+let piperVoicesCache: { at: number; url: string; voices: WyomingVoice[] } | null = null;
+/** Voices that have already completed at least one successful Piper synth (downloaded). */
+const piperVoicesReady = new Set<string>();
 
-function piperUrl(): string | undefined {
-  const value = process.env.PIPER_URL?.trim() || process.env.WYOMING_PIPER_URL?.trim();
-  return value || undefined;
+export function invalidatePiperVoiceCache(): void {
+  piperVoicesCache = null;
 }
 
-/** Per-language override: PIPER_VOICE_UK, PIPER_VOICE_EN, … then global PIPER_VOICE. */
-function preferredPiperVoice(language: string): string | undefined {
+function normalizePiperVoiceName(name: string): string {
+  return name.trim().replace(/\s+/g, '');
+}
+
+function cleanLangOverrideMap(
+  raw: Record<string, string> | undefined,
+  normalizeValue: (value: string) => string = (v) => v.trim(),
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [code, value] of Object.entries(raw ?? {})) {
+    const key = code.trim().toLowerCase();
+    const normalized = normalizeValue(value);
+    if (key && normalized) out[key] = normalized;
+  }
+  return out;
+}
+
+export function voiceRuntimeFromSettings(settings: AppSettings): VoiceRuntime {
+  const piperUrl = settings.piperUrl.trim() || undefined;
+  return {
+    provider: settings.voiceProvider,
+    piperUrl,
+    piperVoice: settings.piperVoice.trim()
+      ? normalizePiperVoiceName(settings.piperVoice)
+      : undefined,
+    piperVoiceByLanguage: cleanLangOverrideMap(
+      settings.piperVoiceByLanguage,
+      normalizePiperVoiceName,
+    ),
+    piperSpeaker: settings.piperSpeaker.trim() || undefined,
+    piperSpeakerByLanguage: cleanLangOverrideMap(settings.piperSpeakerByLanguage),
+    pauseMs: Math.max(0, Number.isFinite(settings.voicePauseMs) ? settings.voicePauseMs : 450),
+    timeoutMs: Math.max(
+      1_000,
+      Number.isFinite(settings.ttsTimeoutMs) ? settings.ttsTimeoutMs : 20_000,
+    ),
+  };
+}
+
+function languageLookupKeys(language: string): string[] {
+  const normalized = normalizeLanguage(language);
+  const templateLang = getTemplate(language).language;
   const raw = language.trim().toLowerCase().replace(/-/g, '_');
   const base = raw.split('_')[0] ?? raw;
-  const keys = [
-    `PIPER_VOICE_${raw.toUpperCase()}`,
-    `PIPER_VOICE_${base.toUpperCase()}`,
-    'PIPER_VOICE',
-  ];
-  for (const key of keys) {
-    const value = process.env[key]?.trim();
+
+  const keys = new Set<string>([raw, base, normalized, templateLang]);
+  if (base === 'ua' || normalized === 'ua' || normalized === 'ukr') {
+    keys.add('uk');
+    keys.add('ua');
+    keys.add('ukr');
+  }
+  if (base === 'eng') keys.add('en');
+  return [...keys];
+}
+
+function lookupLangOverride(
+  byLang: Record<string, string>,
+  language: string,
+): string | undefined {
+  for (const key of languageLookupKeys(language)) {
+    const value = byLang[key];
     if (value) return value;
   }
   return undefined;
+}
+
+/** Per-language override, then global piperVoice. */
+function preferredPiperVoice(runtime: VoiceRuntime, language: string): string | undefined {
+  return lookupLangOverride(runtime.piperVoiceByLanguage, language) ?? runtime.piperVoice;
+}
+
+/** Per-language speaker override, then global piperSpeaker. */
+function preferredPiperSpeaker(runtime: VoiceRuntime, language: string): string | undefined {
+  return lookupLangOverride(runtime.piperSpeakerByLanguage, language) ?? runtime.piperSpeaker;
+}
+
+/** Human-readable voice request for job logs. */
+export function describeVoiceRequest(settings: AppSettings, language: string): string {
+  const runtime = voiceRuntimeFromSettings(settings);
+  const template = getTemplate(language);
+  const lang = template.language;
+  const parts = [`lang=${lang}`, `provider=${runtime.provider}`];
+
+  if (wantsPiper(runtime.provider) && runtime.piperUrl) {
+    const piperVoice = preferredPiperVoice(runtime, language);
+    const speaker = preferredPiperSpeaker(runtime, language);
+    parts.push(`piperVoice=${piperVoice ?? '(auto-pick)'}`);
+    if (speaker) parts.push(`speaker=${speaker}`);
+  }
+
+  if (wantsEdge(runtime.provider)) {
+    parts.push(`edgeVoice=${template.voice}`);
+  }
+
+  if (wantsSapi(runtime.provider)) {
+    parts.push(`sapiLang=${lang}`);
+  }
+
+  return parts.join(' · ');
+}
+
+function piperTimeoutMs(runtime: VoiceRuntime, voice?: string): number {
+  if (voice && !piperVoicesReady.has(voice)) {
+    return Math.max(runtime.timeoutMs, PIPER_DOWNLOAD_TIMEOUT_MS);
+  }
+  return runtime.timeoutMs;
+}
+
+/**
+ * Ask Wyoming Piper to synthesize a short phrase for each configured voice so
+ * models are downloaded before promo generation. Safe to run in the background.
+ */
+export async function ensureConfiguredPiperVoices(
+  settings: AppSettings,
+): Promise<Array<{ voice: string; ok: boolean; error?: string }>> {
+  const runtime = voiceRuntimeFromSettings(settings);
+  if (!runtime.piperUrl || !wantsPiper(runtime.provider)) return [];
+
+  invalidatePiperVoiceCache();
+
+  const voices = new Set<string>();
+  if (runtime.piperVoice) voices.add(runtime.piperVoice);
+  for (const voice of Object.values(runtime.piperVoiceByLanguage)) {
+    if (voice) voices.add(voice);
+  }
+  if (voices.size === 0) return [];
+
+  const results: Array<{ voice: string; ok: boolean; error?: string }> = [];
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'promo-piper-'));
+  try {
+    for (const voice of voices) {
+      const outPath = path.join(tmpDir, `${voice.replace(/[^\w.-]+/g, '_')}.wav`);
+      try {
+        log.info('piper voice ensure/download start', { voice, url: runtime.piperUrl });
+        await synthesizeWyomingToWav(runtime.piperUrl, 'OK.', outPath, {
+          voice,
+          speaker: runtime.piperSpeaker,
+          // Speakers are voice-specific; warm with default speaker only.
+          timeoutMs: Math.max(runtime.timeoutMs, PIPER_DOWNLOAD_TIMEOUT_MS),
+        });
+        piperVoicesReady.add(voice);
+        log.info('piper voice ensure/download ok', { voice });
+        results.push({ voice, ok: true });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.warn('piper voice ensure/download failed', { voice, error });
+        results.push({ voice, ok: false, error });
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  return results;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -66,15 +220,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-async function resolvePiperVoice(language: string): Promise<string | undefined> {
-  const preferred = preferredPiperVoice(language);
-  const url = piperUrl();
+async function resolvePiperVoice(runtime: VoiceRuntime, language: string): Promise<string | undefined> {
+  const preferred = preferredPiperVoice(runtime, language);
+  const url = runtime.piperUrl;
   if (!url) return preferred;
 
   try {
-    if (!piperVoicesCache || Date.now() - piperVoicesCache.at > 10 * 60_000) {
-      const voices = await listWyomingVoices(url, Math.min(10_000, TTS_TIMEOUT_MS));
-      piperVoicesCache = { at: Date.now(), voices };
+    if (
+      !piperVoicesCache ||
+      piperVoicesCache.url !== url ||
+      Date.now() - piperVoicesCache.at > 10 * 60_000
+    ) {
+      const voices = await listWyomingVoices(url, Math.min(10_000, runtime.timeoutMs));
+      piperVoicesCache = { at: Date.now(), url, voices };
       log.info('piper voices loaded', { count: voices.length });
     }
     return pickPiperVoice(piperVoicesCache.voices, language, preferred);
@@ -84,25 +242,47 @@ async function resolvePiperVoice(language: string): Promise<string | undefined> 
   }
 }
 
-async function synthesizePiper(text: string, language: string, outWavPath: string): Promise<string> {
-  const url = piperUrl();
-  if (!url) throw new Error('PIPER_URL is not configured');
-  const voice = await resolvePiperVoice(language);
-  log.info('piper/wyoming start', { url, voice, language, chars: text.length });
+async function synthesizePiper(
+  runtime: VoiceRuntime,
+  text: string,
+  language: string,
+  outWavPath: string,
+): Promise<string> {
+  const url = runtime.piperUrl;
+  if (!url) throw new Error('Piper URL is not configured');
+  const voice = await resolvePiperVoice(runtime, language);
+  const speaker = preferredPiperSpeaker(runtime, language);
+  const timeoutMs = piperTimeoutMs(runtime, voice);
+  log.info('piper/wyoming start', {
+    url,
+    voice,
+    speaker,
+    language,
+    chars: text.length,
+    timeoutMs,
+    download: Boolean(voice && !piperVoicesReady.has(voice)),
+  });
   const result = await synthesizeWyomingToWav(url, text, outWavPath, {
     voice,
-    speaker: process.env.PIPER_SPEAKER?.trim() || undefined,
-    timeoutMs: TTS_TIMEOUT_MS,
+    speaker,
+    language: getTemplate(language).language,
+    timeoutMs,
   });
+  if (voice) piperVoicesReady.add(voice);
   log.info('piper/wyoming ok', { voice: result.voice, bytes: fs.statSync(outWavPath).size, rate: result.rate });
   return result.voice;
 }
 
-async function synthesizeEdgeTts(text: string, voice: string, outPath: string): Promise<void> {
+async function synthesizeEdgeTts(
+  runtime: VoiceRuntime,
+  text: string,
+  voice: string,
+  outPath: string,
+): Promise<void> {
   const { Communicate } = await import('edge-tts-universal');
   const communicate = new Communicate(text, {
     voice,
-    connectionTimeout: Math.min(8_000, TTS_TIMEOUT_MS),
+    connectionTimeout: Math.min(8_000, runtime.timeoutMs),
   });
   const chunks: Buffer[] = [];
 
@@ -112,7 +292,7 @@ async function synthesizeEdgeTts(text: string, voice: string, outPath: string): 
         chunks.push(Buffer.from(chunk.data));
       }
     }
-  })(), TTS_TIMEOUT_MS, 'edge-tts');
+  })(), runtime.timeoutMs, 'edge-tts');
 
   if (chunks.length === 0) {
     throw new Error('No audio returned from edge-tts (WebSocket likely blocked/403)');
@@ -146,7 +326,12 @@ function runPowerShell(script: string, timeoutMs: number): Promise<void> {
 }
 
 /** Offline fallback using Windows System.Speech → WAV (ffmpeg accepts it). */
-async function synthesizeWindowsSapi(text: string, language: string, outWavPath: string): Promise<void> {
+async function synthesizeWindowsSapi(
+  runtime: VoiceRuntime,
+  text: string,
+  language: string,
+  outWavPath: string,
+): Promise<void> {
   if (process.platform !== 'win32') {
     throw new Error('Windows SAPI fallback is only available on win32');
   }
@@ -176,7 +361,7 @@ try {
 }
 if (-not (Test-Path -LiteralPath '${escapedOut}')) { throw 'SAPI produced no wav file' }
 `;
-  await runPowerShell(script, TTS_TIMEOUT_MS);
+  await runPowerShell(script, runtime.timeoutMs);
   if (!fs.existsSync(outWavPath) || fs.statSync(outWavPath).size < 44) {
     throw new Error('Windows SAPI produced an empty wav');
   }
@@ -224,6 +409,7 @@ async function concatSegmentsWithPause(partPaths: string[], outWavPath: string, 
 }
 
 async function synthesizeSegmentsPiper(
+  runtime: VoiceRuntime,
   segments: string[],
   language: string,
   outWavPath: string,
@@ -234,10 +420,10 @@ async function synthesizeSegmentsPiper(
   try {
     for (let i = 0; i < segments.length; i++) {
       const part = path.join(workDir, `seg-${i}.wav`);
-      voiceName = await synthesizePiper(segments[i]!, language, part);
+      voiceName = await synthesizePiper(runtime, segments[i]!, language, part);
       partPaths.push(part);
     }
-    await concatSegmentsWithPause(partPaths, outWavPath, VOICE_PAUSE_MS / 1000);
+    await concatSegmentsWithPause(partPaths, outWavPath, runtime.pauseMs / 1000);
     return voiceName;
   } finally {
     for (const p of partPaths) fs.rmSync(p, { force: true });
@@ -245,6 +431,7 @@ async function synthesizeSegmentsPiper(
 }
 
 async function synthesizeSegmentsEdge(
+  runtime: VoiceRuntime,
   segments: string[],
   voice: string,
   outWavPath: string,
@@ -254,16 +441,17 @@ async function synthesizeSegmentsEdge(
   try {
     for (let i = 0; i < segments.length; i++) {
       const part = path.join(workDir, `seg-${i}.mp3`);
-      await synthesizeEdgeTts(segments[i]!, voice, part);
+      await synthesizeEdgeTts(runtime, segments[i]!, voice, part);
       partPaths.push(part);
     }
-    await concatSegmentsWithPause(partPaths, outWavPath, VOICE_PAUSE_MS / 1000);
+    await concatSegmentsWithPause(partPaths, outWavPath, runtime.pauseMs / 1000);
   } finally {
     for (const p of partPaths) fs.rmSync(p, { force: true });
   }
 }
 
 async function synthesizeSegmentsSapi(
+  runtime: VoiceRuntime,
   segments: string[],
   language: string,
   outWavPath: string,
@@ -273,26 +461,52 @@ async function synthesizeSegmentsSapi(
   try {
     for (let i = 0; i < segments.length; i++) {
       const part = path.join(workDir, `seg-${i}.wav`);
-      await synthesizeWindowsSapi(segments[i]!, language, part);
+      await synthesizeWindowsSapi(runtime, segments[i]!, language, part);
       partPaths.push(part);
     }
-    await concatSegmentsWithPause(partPaths, outWavPath, VOICE_PAUSE_MS / 1000);
+    await concatSegmentsWithPause(partPaths, outWavPath, runtime.pauseMs / 1000);
   } finally {
     for (const p of partPaths) fs.rmSync(p, { force: true });
   }
 }
 
+function wantsPiper(provider: VoiceProvider): boolean {
+  return provider === 'auto' || provider === 'piper';
+}
+
+function wantsEdge(provider: VoiceProvider): boolean {
+  return provider === 'auto' || provider === 'edge';
+}
+
+function wantsSapi(provider: VoiceProvider): boolean {
+  return provider === 'auto' || provider === 'sapi';
+}
+
 export async function synthesizeVoiceOver(
+  settings: AppSettings,
   cacheDir: string,
   language: string,
   input: VoiceLineInput,
 ): Promise<VoiceResult> {
+  const runtime = voiceRuntimeFromSettings(settings);
   const built = buildVoiceLine(language, input);
-  const engineHint = piperUrl() ? 'piper' : 'edge';
-  const piperVoiceHint = preferredPiperVoice(built.language) ?? '';
+  const engineHint = runtime.piperUrl && wantsPiper(runtime.provider) ? 'piper' : runtime.provider;
+  const piperVoiceHint = preferredPiperVoice(runtime, built.language) ?? '';
+  const piperSpeakerHint = preferredPiperSpeaker(runtime, built.language) ?? '';
   const hash = crypto
     .createHash('sha256')
-    .update(`${engineHint}|${built.language}|${piperVoiceHint}|${built.voice}|pause${VOICE_PAUSE_MS}|${built.segments.join('\u0001')}`)
+    .update(
+      [
+        engineHint,
+        built.language,
+        piperVoiceHint,
+        piperSpeakerHint,
+        built.voice,
+        `pause${runtime.pauseMs}`,
+        runtime.provider,
+        built.segments.join('\u0001'),
+      ].join('|'),
+    )
     .digest('hex');
   const outDir = path.join(cacheDir, 'voice');
   fs.mkdirSync(outDir, { recursive: true });
@@ -300,16 +514,26 @@ export async function synthesizeVoiceOver(
   const workDir = path.join(outDir, `${hash}.parts`);
 
   if (fs.existsSync(outWav) && fs.statSync(outWav).size > 0) {
-    return { filePath: outWav, text: built.text, voice: built.voice, cached: true };
+    const cachedVoice =
+      engineHint === 'piper' && piperVoiceHint
+        ? `piper:${piperVoiceHint}${piperSpeakerHint ? `/${piperSpeakerHint}` : ''}`
+        : built.voice;
+    return { filePath: outWav, text: built.text, voice: cachedVoice, cached: true };
   }
 
   const errors: string[] = [];
   fs.mkdirSync(workDir, { recursive: true });
 
   try {
-    if (piperUrl()) {
+    if (wantsPiper(runtime.provider) && runtime.piperUrl) {
       try {
-        const voice = await synthesizeSegmentsPiper(built.segments, built.language, outWav, workDir);
+        const voice = await synthesizeSegmentsPiper(
+          runtime,
+          built.segments,
+          built.language,
+          outWav,
+          workDir,
+        );
         return {
           filePath: outWav,
           text: built.text,
@@ -320,40 +544,58 @@ export async function synthesizeVoiceOver(
         const msg = err instanceof Error ? err.message : String(err);
         errors.push(`piper: ${msg}`);
         log.warn('piper failed; trying fallbacks', msg);
+        if (runtime.provider === 'piper') {
+          return { text: built.text, voice: built.voice, cached: false, error: errors.join(' | ') };
+        }
+      }
+    } else if (runtime.provider === 'piper') {
+      errors.push('piper: URL is not configured');
+      return { text: built.text, voice: built.voice, cached: false, error: errors.join(' | ') };
+    }
+
+    if (wantsEdge(runtime.provider)) {
+      if (!edgeTtsDisabledReason) {
+        try {
+          log.info('edge-tts start', { voice: built.voice, segments: built.segments.length });
+          await synthesizeSegmentsEdge(runtime, built.segments, built.voice, outWav, workDir);
+          log.info('edge-tts ok', { bytes: fs.statSync(outWav).size });
+          return { filePath: outWav, text: built.text, voice: built.voice, cached: false };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          edgeTtsDisabledReason = msg;
+          errors.push(`edge-tts: ${msg}`);
+          log.warn('edge-tts disabled for this process', msg);
+          if (runtime.provider === 'edge') {
+            return { text: built.text, voice: built.voice, cached: false, error: errors.join(' | ') };
+          }
+        }
+      } else {
+        errors.push(`edge-tts skipped (${edgeTtsDisabledReason})`);
+        if (runtime.provider === 'edge') {
+          return { text: built.text, voice: built.voice, cached: false, error: errors.join(' | ') };
+        }
       }
     }
 
-    if (!edgeTtsDisabledReason) {
-      try {
-        log.info('edge-tts start', { voice: built.voice, segments: built.segments.length });
-        await synthesizeSegmentsEdge(built.segments, built.voice, outWav, workDir);
-        log.info('edge-tts ok', { bytes: fs.statSync(outWav).size });
-        return { filePath: outWav, text: built.text, voice: built.voice, cached: false };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        edgeTtsDisabledReason = msg;
-        errors.push(`edge-tts: ${msg}`);
-        log.warn('edge-tts disabled for this process', msg);
-      }
-    } else {
-      errors.push(`edge-tts skipped (${edgeTtsDisabledReason})`);
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        log.info('windows SAPI fallback start', { language: built.language, segments: built.segments.length });
-        await synthesizeSegmentsSapi(built.segments, built.language, outWav, workDir);
-        log.info('windows SAPI ok', { bytes: fs.statSync(outWav).size });
-        return {
-          filePath: outWav,
-          text: built.text,
-          voice: `windows-sapi:${built.language}`,
-          cached: false,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`windows-sapi: ${msg}`);
-        log.warn('windows SAPI failed', msg);
+    if (wantsSapi(runtime.provider)) {
+      if (process.platform === 'win32') {
+        try {
+          log.info('windows SAPI fallback start', { language: built.language, segments: built.segments.length });
+          await synthesizeSegmentsSapi(runtime, built.segments, built.language, outWav, workDir);
+          log.info('windows SAPI ok', { bytes: fs.statSync(outWav).size });
+          return {
+            filePath: outWav,
+            text: built.text,
+            voice: `windows-sapi:${built.language}`,
+            cached: false,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`windows-sapi: ${msg}`);
+          log.warn('windows SAPI failed', msg);
+        }
+      } else if (runtime.provider === 'sapi') {
+        errors.push('windows-sapi: only available on win32');
       }
     }
   } finally {

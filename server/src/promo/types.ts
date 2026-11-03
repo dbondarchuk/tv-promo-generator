@@ -2,6 +2,10 @@ export interface PromoChapterSource {
   filePath: string;
   durationSeconds: number;
   hasAudio?: boolean;
+  /** Audio stream index among audio tracks (`a:N`) matching channel language when known. */
+  audioStreamIndex?: number;
+  /** Language tag of the selected audio stream, if any. */
+  audioStreamLanguage?: string;
   title: string;
   episodeTitle?: string;
   seasonNumber?: number;

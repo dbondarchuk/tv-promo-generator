@@ -22,15 +22,36 @@ import {
 import type Database from 'better-sqlite3';
 import { parseM3u, M3uChannel } from '../ersatztv/m3u.js';
 import { parseXmltv, XmltvGuide, XmltvProgramme } from '../ersatztv/xmltv.js';
-import { downloadLogo, extractDominantColor } from '../color.js';
+import { downloadLogo, extractDominantColor, logoCacheFile, resolveLogoUrl } from '../color.js';
 import { loadChannelOverrides, updateChannelOverride } from '../config.js';
 import { fileExists, findLibraryFile, promoOutputFile, rewritePath } from '../util/paths.js';
 import { createLogger } from '../util/log.js';
-import { probeDurationSeconds, probeHasAudio } from '../ffmpeg/probe.js';
+import {
+  pickAudioStreamForLanguage,
+  probeAudioStreams,
+  probeDurationSeconds,
+} from '../ffmpeg/probe.js';
 import { fromSqliteUtc, toUtcSqlite } from '../ersatztv/time.js';
 import { formatStartsAtLabel } from '../voice/templates.js';
 
 const log = createLogger('channels');
+
+export function channelLogoProxyUrl(channelNumber: string): string {
+  return `/media/logos/${encodeURIComponent(sanitizeChannelFolderName(channelNumber))}`;
+}
+
+async function ensureChannelLogo(
+  settings: AppSettings,
+  channelNumber: string,
+  upstreamLogoUrl?: string,
+): Promise<string | undefined> {
+  if (!upstreamLogoUrl?.trim()) return undefined;
+  const key = sanitizeChannelFolderName(channelNumber);
+  const logoCacheDir = path.join(settings.cachePath, 'logos');
+  const resolved = resolveLogoUrl(upstreamLogoUrl, settings.etvUrl);
+  const logoPath = await downloadLogo(resolved, logoCacheDir, key);
+  return logoPath ? channelLogoProxyUrl(channelNumber) : undefined;
+}
 
 function matchProgramme(programmes: XmltvProgramme[], channelId: string, start: Date): XmltvProgramme | undefined {
   const t = start.getTime();
@@ -200,15 +221,17 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
     log.debug('opened ersatztv db');
   } catch (err) {
     log.error('failed to open ersatztv db', err instanceof Error ? err.message : String(err));
-    const views = m3u.map((ch) => {
+    const views: ChannelView[] = [];
+    for (const ch of m3u) {
       const override = overrides[ch.number];
       const color = override?.color ?? '#1a468d';
       const out = promoOutputFile(settings.outputPath, ch.name);
-      return {
+      const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
+      views.push({
         number: ch.number,
         name: ch.name,
         tvgId: ch.tvgId,
-        logoUrl: ch.logoUrl,
+        logoUrl,
         language: override?.language || languageByNumber.get(ch.number) || 'en',
         color,
         colorLocked: Boolean(override?.colorLocked),
@@ -217,8 +240,8 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
         promoExists: fileExists(out),
         promoUrl: fileExists(out) ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4` : undefined,
         lastError: err instanceof Error ? err.message : String(err),
-      } satisfies ChannelView;
-    });
+      });
+    }
     viewsCache = { at: Date.now(), key: cacheKey, views };
     return views;
   }
@@ -226,7 +249,6 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
   try {
     const now = new Date();
     const views: ChannelView[] = [];
-    const logoCacheDir = path.join(settings.cachePath, 'logos');
 
     for (const ch of m3u) {
       const override = overrides[ch.number] ?? { enabled: true };
@@ -234,10 +256,11 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
       let color = override.color;
       let colorLocked = Boolean(override.colorLocked);
 
-      // Only download/extract color when we don't already have one (cached logo file reused).
-      if (!color && ch.logoUrl) {
-        const logoPath = await downloadLogo(ch.logoUrl, logoCacheDir, sanitizeChannelFolderName(ch.number));
-        if (logoPath) {
+      // Cache logo for UI proxy; extract color only when we don't already have one.
+      const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
+      if (logoUrl && !color) {
+        const logoPath = logoCacheFile(settings.cachePath, sanitizeChannelFolderName(ch.number));
+        if (fs.existsSync(logoPath)) {
           color = await extractDominantColor(logoPath);
           updateChannelOverride(ch.number, { color, colorLocked: false, enabled: override.enabled ?? true });
         }
@@ -246,7 +269,7 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
 
       const current = getCurrentPrimaryItem(db, ch.number, toUtcSqlite(now));
       const afterIso = current ? current.finish : toUtcSqlite(now);
-      const nextRows = getPrimaryItemsAfter(db, ch.number, afterIso, 3);
+      const nextRows = getPrimaryItemsAfter(db, ch.number, afterIso, settings.promoItemCount ?? 3);
 
       const nextItems: ScheduleItemPreview[] = [];
       for (const row of nextRows) {
@@ -306,7 +329,7 @@ export async function loadChannelViews(settings: AppSettings): Promise<ChannelVi
         number: ch.number,
         name: ch.name,
         tvgId: ch.tvgId,
-        logoUrl: ch.logoUrl,
+        logoUrl,
         language,
         color,
         colorLocked,
@@ -388,7 +411,7 @@ export async function buildPromoChaptersForChannel(
     const now = new Date();
     const current = getCurrentPrimaryItem(db, channelNumber, toUtcSqlite(now));
     const afterIso = current ? current.finish : toUtcSqlite(now);
-    const nextRows = getPrimaryItemsAfter(db, channelNumber, afterIso, 3);
+    const nextRows = getPrimaryItemsAfter(db, channelNumber, afterIso, settings.promoItemCount ?? 3);
     progress(`Found ${nextRows.length} upcoming primary item(s)`);
     labeledRows = nextRows.map((row) => {
       const start = fromSqliteUtc(row.start);
@@ -415,7 +438,11 @@ export async function buildPromoChaptersForChannel(
   const logoCacheDir = path.join(settings.cachePath, 'logos');
   if (channelMeta.logoUrl) progress('Downloading channel logo');
   const logoPath = channelMeta.logoUrl
-    ? await downloadLogo(channelMeta.logoUrl, logoCacheDir, sanitizeChannelFolderName(channelMeta.number))
+    ? await downloadLogo(
+        resolveLogoUrl(channelMeta.logoUrl, settings.etvUrl),
+        logoCacheDir,
+        sanitizeChannelFolderName(channelMeta.number),
+      )
     : undefined;
   const color = override.color
     ?? (logoPath ? await extractDominantColor(logoPath) : '#1a468d');
@@ -444,11 +471,22 @@ export async function buildPromoChaptersForChannel(
       continue;
     }
     progress(`Resolved ${title} → ${resolved.filePath} (${Math.round(resolved.durationSeconds)}s)`);
-    const hasAudio = await probeHasAudio(resolved.filePath);
+    const audioStreams = await probeAudioStreams(resolved.filePath).catch(() => []);
+    const picked = pickAudioStreamForLanguage(audioStreams, language);
+    const hasAudio = audioStreams.length > 0;
+    if (hasAudio) {
+      progress(
+        picked?.language
+          ? `Audio track a:${picked.audioIndex} (${picked.language}) for ${title}`
+          : `Audio track a:${picked?.audioIndex ?? 0} (untagged) for ${title}`,
+      );
+    }
     chapters.push({
       filePath: resolved.filePath,
       durationSeconds: resolved.durationSeconds,
       hasAudio,
+      audioStreamIndex: picked?.audioIndex,
+      audioStreamLanguage: picked?.language,
       title,
       episodeTitle,
       seasonNumber,
