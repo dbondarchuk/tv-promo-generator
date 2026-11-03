@@ -6,7 +6,8 @@ COPY package.json package-lock.json* ./
 COPY packages/shared/package.json packages/shared/
 COPY server/package.json server/
 COPY client/package.json client/
-RUN npm install
+RUN npm install \
+ && npm install --no-save @rollup/rollup-linux-x64-gnu @rollup/rollup-linux-arm64-gnu
 COPY . .
 RUN npm run build
 
