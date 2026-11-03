@@ -20,21 +20,26 @@ function env(name: string): string | undefined {
   return value && value.trim() !== '' ? value.trim() : undefined;
 }
 
-function envInt(name: string, fallback: number): number {
+function envInt(name: string): number | undefined {
   const value = env(name);
-  if (!value) return fallback;
+  if (!value) return undefined;
   const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n) ? n : undefined;
 }
 
-function envBool(name: string, fallback: boolean): boolean {
+function envBool(name: string): boolean | undefined {
   const value = env(name);
-  if (!value) return fallback;
+  if (!value) return undefined;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+/** Prefer UI/file value, then env bootstrap, then default. */
+function pick<T>(fileVal: T | undefined, envVal: T | undefined, fallback: T): T {
+  return fileVal !== undefined ? fileVal : envVal !== undefined ? envVal : fallback;
 }
 
 export function resolveConfigPath(): string {
@@ -54,37 +59,52 @@ export function loadSettings(): AppSettings {
     }
   }
 
+  // Precedence: defaults < env (Docker bootstrap) < settings.json (UI).
+  // CONFIG_PATH is infrastructure and always comes from the environment.
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
-    ...fromFile,
     configPath,
-    etvUrl: env('ETV_URL') ?? fromFile.etvUrl ?? DEFAULT_SETTINGS.etvUrl,
-    etvApiKey: env('ETV_API_KEY') ?? fromFile.etvApiKey ?? DEFAULT_SETTINGS.etvApiKey,
-    etvDatabase: env('ETV_DATABASE') ?? fromFile.etvDatabase ?? DEFAULT_SETTINGS.etvDatabase,
-    libraryPath: env('LIBRARY_PATH') ?? fromFile.libraryPath ?? DEFAULT_SETTINGS.libraryPath,
-    etvPathPrefix: env('ETV_PATH_PREFIX') ?? fromFile.etvPathPrefix ?? DEFAULT_SETTINGS.etvPathPrefix,
-    outputPath: path.resolve(env('OUTPUT_PATH') ?? fromFile.outputPath ?? DEFAULT_SETTINGS.outputPath),
-    etvLibraryPath: env('ETV_LIBRARY_PATH') ?? fromFile.etvLibraryPath ?? DEFAULT_SETTINGS.etvLibraryPath,
-    cachePath: path.resolve(env('CACHE_PATH') ?? fromFile.cachePath ?? DEFAULT_SETTINGS.cachePath),
-    port: envInt('PORT', fromFile.port ?? DEFAULT_SETTINGS.port),
-    hardwareAcceleration: (env('HARDWARE_ACCELERATION') as HardwareAcceleration | undefined)
-      ?? fromFile.hardwareAcceleration
-      ?? DEFAULT_SETTINGS.hardwareAcceleration,
-    vaapiDevice: env('VAAPI_DEVICE') ?? fromFile.vaapiDevice ?? DEFAULT_SETTINGS.vaapiDevice,
-    vaapiDriver: (env('VAAPI_DRIVER') as VaapiDriver | undefined)
-      ?? fromFile.vaapiDriver
-      ?? DEFAULT_SETTINGS.vaapiDriver,
-    vaapiDisplay: env('VAAPI_DISPLAY') ?? fromFile.vaapiDisplay ?? DEFAULT_SETTINGS.vaapiDisplay,
-    videoCodec: (env('VIDEO_CODEC') as VideoCodec | undefined) ?? fromFile.videoCodec ?? DEFAULT_SETTINGS.videoCodec,
-    videoBitrate: envInt('VIDEO_BITRATE', fromFile.videoBitrate ?? DEFAULT_SETTINGS.videoBitrate),
-    audioBitrate: envInt('AUDIO_BITRATE', fromFile.audioBitrate ?? DEFAULT_SETTINGS.audioBitrate),
-    resolution: env('RESOLUTION') ?? fromFile.resolution ?? DEFAULT_SETTINGS.resolution,
-    videoPreset: env('VIDEO_PRESET') ?? fromFile.videoPreset ?? DEFAULT_SETTINGS.videoPreset,
-    videoProfile: env('VIDEO_PROFILE') ?? fromFile.videoProfile ?? DEFAULT_SETTINGS.videoProfile,
-    voiceEnabled: env('VOICE_ENABLED') !== undefined
-      ? envBool('VOICE_ENABLED', true)
-      : (fromFile.voiceEnabled ?? DEFAULT_SETTINGS.voiceEnabled),
-    regenLeadMinutes: envInt('REGEN_LEAD_MINUTES', fromFile.regenLeadMinutes ?? DEFAULT_SETTINGS.regenLeadMinutes),
+    etvUrl: pick(fromFile.etvUrl, env('ETV_URL'), DEFAULT_SETTINGS.etvUrl),
+    etvApiKey: pick(fromFile.etvApiKey, env('ETV_API_KEY'), DEFAULT_SETTINGS.etvApiKey),
+    etvDatabase: pick(fromFile.etvDatabase, env('ETV_DATABASE'), DEFAULT_SETTINGS.etvDatabase),
+    libraryPath: pick(fromFile.libraryPath, env('LIBRARY_PATH'), DEFAULT_SETTINGS.libraryPath),
+    etvPathPrefix: pick(fromFile.etvPathPrefix, env('ETV_PATH_PREFIX'), DEFAULT_SETTINGS.etvPathPrefix),
+    outputPath: path.resolve(
+      pick(fromFile.outputPath, env('OUTPUT_PATH'), DEFAULT_SETTINGS.outputPath),
+    ),
+    etvLibraryPath: pick(fromFile.etvLibraryPath, env('ETV_LIBRARY_PATH'), DEFAULT_SETTINGS.etvLibraryPath),
+    cachePath: path.resolve(
+      pick(fromFile.cachePath, env('CACHE_PATH'), DEFAULT_SETTINGS.cachePath),
+    ),
+    port: pick(fromFile.port, envInt('PORT'), DEFAULT_SETTINGS.port),
+    hardwareAcceleration: pick(
+      fromFile.hardwareAcceleration,
+      env('HARDWARE_ACCELERATION') as HardwareAcceleration | undefined,
+      DEFAULT_SETTINGS.hardwareAcceleration,
+    ),
+    vaapiDevice: pick(fromFile.vaapiDevice, env('VAAPI_DEVICE'), DEFAULT_SETTINGS.vaapiDevice),
+    vaapiDriver: pick(
+      fromFile.vaapiDriver,
+      env('VAAPI_DRIVER') as VaapiDriver | undefined,
+      DEFAULT_SETTINGS.vaapiDriver,
+    ),
+    vaapiDisplay: pick(fromFile.vaapiDisplay, env('VAAPI_DISPLAY'), DEFAULT_SETTINGS.vaapiDisplay),
+    videoCodec: pick(
+      fromFile.videoCodec,
+      env('VIDEO_CODEC') as VideoCodec | undefined,
+      DEFAULT_SETTINGS.videoCodec,
+    ),
+    videoBitrate: pick(fromFile.videoBitrate, envInt('VIDEO_BITRATE'), DEFAULT_SETTINGS.videoBitrate),
+    audioBitrate: pick(fromFile.audioBitrate, envInt('AUDIO_BITRATE'), DEFAULT_SETTINGS.audioBitrate),
+    resolution: pick(fromFile.resolution, env('RESOLUTION'), DEFAULT_SETTINGS.resolution),
+    videoPreset: pick(fromFile.videoPreset, env('VIDEO_PRESET'), DEFAULT_SETTINGS.videoPreset),
+    videoProfile: pick(fromFile.videoProfile, env('VIDEO_PROFILE'), DEFAULT_SETTINGS.videoProfile),
+    voiceEnabled: pick(fromFile.voiceEnabled, envBool('VOICE_ENABLED'), DEFAULT_SETTINGS.voiceEnabled),
+    regenLeadMinutes: pick(
+      fromFile.regenLeadMinutes,
+      envInt('REGEN_LEAD_MINUTES'),
+      DEFAULT_SETTINGS.regenLeadMinutes,
+    ),
   };
 
   if (!merged.etvLibraryPath) {

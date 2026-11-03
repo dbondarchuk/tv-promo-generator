@@ -193,7 +193,7 @@ First-time GHCR notes:
 
 ## Configuration
 
-Copy [`.env.example`](.env.example) → `.env`. Env vars override `config/settings.json`.
+Copy [`.env.example`](.env.example) → `.env`. Env vars bootstrap defaults; values saved in the UI (`config/settings.json`) win afterward.
 
 ### ErsatzTV & paths
 
