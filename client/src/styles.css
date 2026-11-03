@@ -157,6 +157,9 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .badge.ok { color: #86efac; }
 .badge.err { color: #fca5a5; }
 .badge.warn { color: #fde68a; }
+.badge.push { color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.35); }
+.badge.gen { color: var(--muted); }
+.job-block.job-push { border-color: rgba(147, 197, 253, 0.35); }
 .error { color: #fca5a5; white-space: pre-wrap; font-size: 13px; }
 .success { color: #86efac; font-size: 13px; }
 .settings-grid {

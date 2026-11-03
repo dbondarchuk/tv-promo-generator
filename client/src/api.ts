@@ -3,7 +3,6 @@ import type {
   ChannelView,
   EtvBackupInfo,
   JobInfo,
-  PushResult,
   RollbackResult,
   ValidateSettingsResult,
 } from '@promo/shared';
@@ -61,7 +60,7 @@ export const api = {
       es.close();
     };
   },
-  push: () => request<PushResult>('/api/push', { method: 'POST', body: '{}' }),
+  push: () => request<{ job: JobInfo }>('/api/push', { method: 'POST', body: '{}' }),
   listBackups: () =>
     request<{ backups: EtvBackupInfo[]; latestPush: EtvBackupInfo | null }>('/api/backups'),
   createBackup: () => request<EtvBackupInfo>('/api/backups', { method: 'POST', body: '{}' }),

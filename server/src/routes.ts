@@ -18,7 +18,6 @@ import {
   rollbackErsatzTvDatabase,
 } from './services/etv-backup.js';
 import { JobQueue } from './services/jobs.js';
-import { pushToErsatzTv } from './services/push.js';
 import { validateSettings } from './services/validate-settings.js';
 import { createLogger } from './util/log.js';
 
@@ -224,12 +223,11 @@ export function createRouter(opts: {
     req.on('close', close);
   });
 
-  router.post('/push', async (_req, res) => {
+  router.post('/push', (_req, res) => {
     try {
-      log.info('push to ErsatzTV started');
-      const result = await pushToErsatzTv(opts.getSettings());
-      log.info('push to ErsatzTV finished', result);
-      res.json(result);
+      log.info('enqueue push to ErsatzTV');
+      const job = opts.jobs.enqueuePush();
+      res.json({ job });
     } catch (err) {
       log.error('POST /push failed', err instanceof Error ? err.message : String(err));
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

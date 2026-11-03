@@ -61,6 +61,8 @@ export interface ScheduleItemPreview {
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'late';
 
+export type JobKind = 'generate' | 'push';
+
 export type JobLogLevel = 'info' | 'warn' | 'error';
 
 export interface JobLogEntry {
@@ -71,6 +73,7 @@ export interface JobLogEntry {
 
 export interface JobInfo {
   id: string;
+  kind: JobKind;
   channelNumber: string;
   channelName: string;
   status: JobStatus;
