@@ -56,7 +56,9 @@ COPY package.json package-lock.json* ./
 COPY packages/shared/package.json packages/shared/
 COPY server/package.json server/
 COPY client/package.json client/
-RUN npm install --omit=dev
+# Windows lockfiles omit Linux optional natives (same npm optional-deps bug as rollup).
+RUN npm install --omit=dev \
+ && npm install --no-save --os=linux --cpu=x64 sharp
 
 COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/shared/package.json packages/shared/package.json
