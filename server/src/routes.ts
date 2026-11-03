@@ -3,6 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { AppSettings, sanitizeChannelFolderName } from '@promo/shared';
 import {
+  clearSavedSettings,
+  hasSavedSettings,
   loadSettings,
   saveSettings,
   loadChannelOverrides,
@@ -52,11 +54,23 @@ export function createRouter(opts: {
     res.json(opts.getSettings());
   });
 
+  router.get('/settings/status', (_req, res) => {
+    res.json({ saved: hasSavedSettings() });
+  });
+
   router.put('/settings', (req, res) => {
     const next = saveSettings({ ...opts.getSettings(), ...req.body });
     opts.setSettings(next);
     invalidateChannelCaches();
     log.info('settings updated');
+    res.json(next);
+  });
+
+  router.delete('/settings', (_req, res) => {
+    const next = clearSavedSettings();
+    opts.setSettings(next);
+    invalidateChannelCaches();
+    log.info('saved settings cleared; using env/defaults');
     res.json(next);
   });
 

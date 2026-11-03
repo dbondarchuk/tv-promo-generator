@@ -14,14 +14,21 @@ const CODECS: VideoCodec[] = ['H264', 'Hevc'];
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savedToFile, setSavedToFile] = useState(false);
   const [message, setMessage] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [validation, setValidation] = useState<ValidateSettingsResult | null>(null);
 
   useEffect(() => {
-    api.getSettings().then(setSettings).catch((e) => setError(String(e.message || e)));
+    Promise.all([api.getSettings(), api.getSettingsStatus()])
+      .then(([s, status]) => {
+        setSettings(s);
+        setSavedToFile(status.saved);
+      })
+      .catch((e) => setError(String(e.message || e)));
   }, []);
 
   async function onSubmit(e: FormEvent) {
@@ -33,7 +40,8 @@ export function SettingsPage() {
     try {
       const saved = await api.saveSettings(settings);
       setSettings(saved);
-      setMessage('Settings saved.');
+      setSavedToFile(true);
+      setMessage('Settings saved to config (override env/defaults).');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -55,6 +63,28 @@ export function SettingsPage() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setValidating(false);
+    }
+  }
+
+  async function onClearSaved() {
+    if (!window.confirm(
+      'Clear saved UI settings? Values will fall back to environment variables, then built-in defaults.',
+    )) {
+      return;
+    }
+    setClearing(true);
+    setMessage('');
+    setError('');
+    setValidation(null);
+    try {
+      const next = await api.clearSavedSettings();
+      setSettings(next);
+      setSavedToFile(false);
+      setMessage('Cleared saved settings — now using env/defaults.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -89,7 +119,13 @@ export function SettingsPage() {
   return (
     <form className="panel" onSubmit={onSubmit}>
       <h1>Settings</h1>
-      <p className="muted">ErsatzTV connection, media paths, encoding, and voice-over.</p>
+      <p className="muted">
+        ErsatzTV connection, media paths, encoding, and voice-over.
+        {' '}
+        {savedToFile
+          ? 'Saved values override env/defaults.'
+          : 'No UI save yet — showing env/defaults.'}
+      </p>
 
       <h2>ErsatzTV</h2>
       <div className="settings-grid">
@@ -170,14 +206,25 @@ export function SettingsPage() {
       </div>
 
       <div className="row" style={{ marginTop: 18 }}>
-        <button type="submit" disabled={saving || validating}>{saving ? 'Saving…' : 'Save settings'}</button>
+        <button type="submit" disabled={saving || validating || clearing}>
+          {saving ? 'Saving…' : 'Save settings'}
+        </button>
         <button
           type="button"
           className="secondary"
-          disabled={saving || validating}
+          disabled={saving || validating || clearing}
           onClick={() => void onValidate()}
         >
           {validating ? 'Validating…' : 'Validate settings'}
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={saving || validating || clearing || !savedToFile}
+          title={savedToFile ? 'Delete settings.json and reload env/defaults' : 'Nothing saved in UI yet'}
+          onClick={() => void onClearSaved()}
+        >
+          {clearing ? 'Clearing…' : 'Clear saved (use env/defaults)'}
         </button>
         {message && <span className={validation && !validation.ok ? 'error' : 'success'}>{message}</span>}
         {error && <span className="error">{error}</span>}

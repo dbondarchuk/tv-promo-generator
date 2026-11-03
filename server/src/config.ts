@@ -131,6 +131,19 @@ export function saveSettings(settings: AppSettings): AppSettings {
   return loadSettings();
 }
 
+/** Delete UI-persisted settings so the next load uses env → defaults. */
+export function clearSavedSettings(): AppSettings {
+  const filePath = path.join(resolveConfigPath(), SETTINGS_FILE);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+  return loadSettings();
+}
+
+export function hasSavedSettings(): boolean {
+  return fs.existsSync(path.join(resolveConfigPath(), SETTINGS_FILE));
+}
+
 export function loadChannelOverrides(): ChannelOverrides {
   const configPath = resolveConfigPath();
   ensureDir(configPath);

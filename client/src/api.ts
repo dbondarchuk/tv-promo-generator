@@ -22,8 +22,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getSettings: () => request<AppSettings>('/api/settings'),
+  getSettingsStatus: () => request<{ saved: boolean }>('/api/settings/status'),
   saveSettings: (settings: AppSettings) =>
     request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  clearSavedSettings: () => request<AppSettings>('/api/settings', { method: 'DELETE' }),
   validateSettings: (settings: AppSettings) =>
     request<ValidateSettingsResult>('/api/settings/validate', {
       method: 'POST',
