@@ -1,5 +1,3 @@
-FROM jellyfin/jellyfin:latest AS jf
-
 FROM node:22-bookworm AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
@@ -22,7 +20,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CACHE_PATH=/data/cache \
     LIBRARY_PATH=/library \
     ETV_LIBRARY_PATH=/promos \
-    PATH="/usr/lib/jellyfin-ffmpeg:${PATH}"
+    FFMPEG_PATH=/usr/bin/ffmpeg \
+    FFPROBE_PATH=/usr/bin/ffprobe
 
 # VA drivers: mesa is in main; Intel iHD needs non-free / non-free-firmware.
 RUN set -eux; \
@@ -34,6 +33,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       ca-certificates \
+      ffmpeg \
       fonts-noto-core \
       fonts-dejavu-core \
       mesa-va-drivers \
@@ -45,11 +45,9 @@ RUN set -eux; \
       g++; \
     apt-get install -y --no-install-recommends intel-media-va-driver-non-free \
       || echo "intel-media-va-driver-non-free unavailable; continuing with mesa-va-drivers"; \
-    rm -rf /var/lib/apt/lists/*
-
-COPY --from=jf /usr/lib/jellyfin-ffmpeg /usr/lib/jellyfin-ffmpeg
-RUN ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg \
- && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe
+    rm -rf /var/lib/apt/lists/*; \
+    ffmpeg -version >/dev/null; \
+    ffprobe -version >/dev/null
 
 WORKDIR /app
 COPY package.json package-lock.json* ./

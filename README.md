@@ -157,7 +157,7 @@ Hardware:
 - **VAAPI / QSV** — uncomment `/dev/dri` (and set `HARDWARE_ACCELERATION`)
 - **NVENC** — uncomment the NVIDIA device reservation
 
-The image vendors Jellyfin’s ffmpeg. UI + API are served together on port **5174**.
+The image installs Debian `ffmpeg` (VAAPI-ready with the bundled drivers). UI + API are served together on port **5174**.
 
 ### Published image (GHCR)
 

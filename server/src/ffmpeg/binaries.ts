@@ -23,8 +23,8 @@ function toolsBin(name: 'ffmpeg' | 'ffprobe'): string {
 
 function isRunnable(bin: string): boolean {
   if (!bin) return false;
-  if (path.isAbsolute(bin) || bin.includes('/') || bin.includes('\\')) {
-    return fs.existsSync(bin);
+  if ((path.isAbsolute(bin) || bin.includes('/') || bin.includes('\\')) && !fs.existsSync(bin)) {
+    return false;
   }
   const probe = spawnSync(bin, ['-version'], {
     windowsHide: true,
