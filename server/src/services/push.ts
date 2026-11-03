@@ -13,10 +13,12 @@ import {
   findMediaItemByPath,
   getPlayoutForChannel,
   openDb,
+  promoNextNames,
   resetSchemaCache,
   scheduleSharedByOtherChannels,
   setScheduleItemsPreRoll,
-  upsertFillerPreset,
+  upsertFillerPresetForCollection,
+  upsertManualCollection,
 } from '../ersatztv/db.js';
 import { fileExists, promoOutputFile } from '../util/paths.js';
 import { createLogger } from '../util/log.js';
@@ -37,6 +39,35 @@ function isClassicSchedule(kind: number | string | null | undefined): boolean {
   if (typeof kind === 'number') return kind === 0 || kind === 1;
   const lower = String(kind).toLowerCase();
   return lower === '0' || lower === '1' || lower === 'classic' || lower === 'none';
+}
+
+async function withWriteDb<T>(
+  dbPath: string,
+  progress: PushProgress,
+  fn: (db: ReturnType<typeof openDb>) => T,
+): Promise<T> {
+  const attempts = 5;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      progress(`Opening DB for write (attempt ${attempt}/${attempts})`);
+      const db = openDb(dbPath, false, { busyTimeoutMs: 10_000 });
+      try {
+        return fn(db);
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      lastErr = err;
+      const message = err instanceof Error ? err.message : String(err);
+      progress(`DB write open/query failed: ${message}`, 'warn');
+      if (attempt < attempts) await sleep(1500 * attempt);
+    }
+  }
+  throw new Error(
+    `Could not write ErsatzTV database after ${attempts} attempts` +
+      ` (is ErsatzTV locking it?): ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+  );
 }
 
 export async function pushToErsatzTv(
@@ -63,13 +94,13 @@ export async function pushToErsatzTv(
   progress(`Backup ready: ${backup.id} (${backup.bytes} bytes)`);
 
   progress(`Ensuring Promo Generator library at ${etvLibraryPath}`);
-  const db = openDb(settings.etvDatabase, false);
   let libraryId: number;
   try {
-    libraryId = ensurePromoLibrary(db, 'Promo Generator', etvLibraryPath).libraryId;
+    libraryId = await withWriteDb(settings.etvDatabase, progress, (db) =>
+      ensurePromoLibrary(db, 'Promo Generator', etvLibraryPath).libraryId,
+    );
     progress(`Library id ${libraryId}`);
   } catch (err) {
-    db.close();
     const message = err instanceof Error ? err.message : String(err);
     progress(message, 'error');
     return {
@@ -82,7 +113,6 @@ export async function pushToErsatzTv(
       })),
     };
   }
-  db.close();
 
   try {
     progress(`Scanning library ${libraryId}`);
@@ -103,6 +133,7 @@ export async function pushToErsatzTv(
 
   for (const channel of channels) {
     progress(`Channel ${channel.number} (${channel.name})`);
+    const names = promoNextNames(channel.name);
     const localPath = promoOutputFile(settings.outputPath, channel.name);
     if (!fileExists(localPath)) {
       const message = 'Promo file missing; generate it first';
@@ -156,86 +187,90 @@ export async function pushToErsatzTv(
     }
 
     progress(`  Media item ${mediaItemId}`);
-    const writeDb = openDb(settings.etvDatabase, false);
     try {
-      const playout = getPlayoutForChannel(writeDb, channel.number);
-      if (!playout) {
-        const message = 'No playout found for channel';
-        progress(`  ${message}`, 'warn');
-        results.push({
-          channelNumber: channel.number,
-          channelName: channel.name,
-          ok: false,
-          message,
-        });
-        continue;
-      }
-      if (!isClassicSchedule(playout.scheduleKind)) {
-        const message = `Skipped: playout kind ${String(playout.scheduleKind)} is not classic`;
-        progress(`  ${message}`, 'warn');
-        results.push({
-          channelNumber: channel.number,
-          channelName: channel.name,
-          ok: false,
-          message,
-        });
-        continue;
-      }
-      if (!playout.programScheduleId) {
-        const message = 'Skipped: no ProgramScheduleId on playout';
-        progress(`  ${message}`, 'warn');
-        results.push({
-          channelNumber: channel.number,
-          channelName: channel.name,
-          ok: false,
-          message,
-        });
-        continue;
-      }
+      const applied = await withWriteDb(settings.etvDatabase, progress, (writeDb) => {
+        const playout = getPlayoutForChannel(writeDb, channel.number);
+        if (!playout) {
+          return { ok: false as const, message: 'No playout found for channel' };
+        }
+        if (!isClassicSchedule(playout.scheduleKind)) {
+          return {
+            ok: false as const,
+            message: `Skipped: playout kind ${String(playout.scheduleKind)} is not classic`,
+          };
+        }
+        if (!playout.programScheduleId) {
+          return { ok: false as const, message: 'Skipped: no ProgramScheduleId on playout' };
+        }
 
-      const shared = scheduleSharedByOtherChannels(writeDb, playout.programScheduleId, playout.channelId);
-      if (shared.length > 0) {
-        const message = `Skipped: schedule shared with ${shared.join(', ')}`;
-        progress(`  ${message}`, 'warn');
+        const shared = scheduleSharedByOtherChannels(
+          writeDb,
+          playout.programScheduleId,
+          playout.channelId,
+        );
+        if (shared.length > 0) {
+          return {
+            ok: false as const,
+            message: `Skipped: schedule shared with ${shared.join(', ')}`,
+          };
+        }
+
+        const collection = upsertManualCollection(writeDb, names.collection, mediaItemId!);
+        progress(
+          `  Collection "${names.collection}" id ${collection.id}` +
+            `${collection.created ? ' (created)' : ' (updated)'}`,
+        );
+
+        const preset = upsertFillerPresetForCollection(writeDb, names.filler, collection.id);
+        progress(
+          `  Filler preset "${names.filler}" id ${preset.id}` +
+            `${preset.created ? ' (created)' : ' (updated)'}`,
+        );
+
+        const schedule = setScheduleItemsPreRoll(writeDb, playout.programScheduleId, preset.id);
+        progress(`  Pre-roll set on ${schedule.updated} schedule item(s)`);
+        return {
+          ok: true as const,
+          updated: schedule.updated,
+          replacedPreRoll: schedule.previousNames.join(', ') || undefined,
+        };
+      });
+
+      if (!applied.ok) {
+        progress(`  ${applied.message}`, 'warn');
         results.push({
           channelNumber: channel.number,
           channelName: channel.name,
           ok: false,
-          message,
+          message: applied.message,
         });
         continue;
       }
-
-      const presetName = `Promo pre-roll ${channel.number}`;
-      const preset = upsertFillerPreset(writeDb, presetName, mediaItemId);
-      progress(`  Filler preset ${preset.id}${preset.created ? ' (created)' : ' (updated)'}`);
-      const applied = setScheduleItemsPreRoll(writeDb, playout.programScheduleId, preset.id);
-      progress(`  Pre-roll set on ${applied.updated} schedule item(s)`);
 
       try {
         progress('  Resetting playout');
         await api.resetPlayout(channel.number);
       } catch (err) {
-        const message = `Pre-roll set, but playout reset failed: ${err instanceof Error ? err.message : String(err)}`;
+        const message = `Collection/filler set, but playout reset failed: ${err instanceof Error ? err.message : String(err)}`;
         progress(`  ${message}`, 'error');
         results.push({
           channelNumber: channel.number,
           channelName: channel.name,
           ok: false,
           message,
-          replacedPreRoll: applied.previousNames.join(', ') || undefined,
+          replacedPreRoll: applied.replacedPreRoll,
         });
         continue;
       }
 
-      const message = `Pre-roll set on ${applied.updated} schedule item(s); playout reset`;
+      const message = `Collection + pre-roll filler wired (${applied.updated} schedule item(s)); playout reset`;
       progress(`  OK — ${message}`);
       results.push({
         channelNumber: channel.number,
         channelName: channel.name,
         ok: true,
         message,
-        replacedPreRoll: applied.previousNames.join(', ') || undefined,
+        replacedPreRoll: applied.replacedPreRoll,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -246,8 +281,6 @@ export async function pushToErsatzTv(
         ok: false,
         message,
       });
-    } finally {
-      writeDb.close();
     }
   }
 

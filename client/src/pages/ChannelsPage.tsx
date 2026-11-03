@@ -23,21 +23,25 @@ export function ChannelsPage() {
   const [streamStatus, setStreamStatus] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [busy, setBusy] = useState(false);
   const [latestPushBackup, setLatestPushBackup] = useState<EtvBackupInfo | null>(null);
-  const [rollbackMessage, setRollbackMessage] = useState('');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const userExpandedRef = useRef(false);
   const prevJobSignatureRef = useRef('');
-  const seenPushFinishedRef = useRef<Set<string>>(new Set());
+  const seenExclusiveFinishedRef = useRef<Set<string>>(new Set());
 
   const jobsActive = useMemo(
     () => jobs.some((j) => j.status === 'queued' || j.status === 'running' || j.status === 'late'),
     [jobs],
   );
 
-  const pushActive = useMemo(
-    () => jobs.some((j) => j.kind === 'push' && (j.status === 'queued' || j.status === 'running')),
+  const exclusiveActive = useMemo(
+    () =>
+      jobs.some(
+        (j) =>
+          (j.kind === 'push' || j.kind === 'rollback') &&
+          (j.status === 'queued' || j.status === 'running'),
+      ),
     [jobs],
   );
 
@@ -84,12 +88,12 @@ export function ChannelsPage() {
 
         for (const j of nextJobs) {
           if (
-            j.kind === 'push' &&
+            (j.kind === 'push' || j.kind === 'rollback') &&
             (j.status === 'succeeded' || j.status === 'failed') &&
             j.finishedAt &&
-            !seenPushFinishedRef.current.has(j.id)
+            !seenExclusiveFinishedRef.current.has(j.id)
           ) {
-            seenPushFinishedRef.current.add(j.id);
+            seenExclusiveFinishedRef.current.add(j.id);
             void refreshBackups();
           }
         }
@@ -99,8 +103,11 @@ export function ChannelsPage() {
             return prev;
           }
           if (prev && nextJobs.some((job) => job.id === prev)) return prev;
-          const runningPush = nextJobs.find((job) => job.kind === 'push' && job.status === 'running');
-          if (runningPush) return runningPush.id;
+          const runningExclusive = nextJobs.find(
+            (job) =>
+              (job.kind === 'push' || job.kind === 'rollback') && job.status === 'running',
+          );
+          if (runningExclusive) return runningExclusive.id;
           const running = nextJobs.find((job) => job.status === 'running');
           return running?.id ?? prev ?? nextJobs[0]?.id ?? null;
         });
@@ -153,7 +160,6 @@ export function ChannelsPage() {
       return;
     }
     setBusy(true);
-    setRollbackMessage('');
     setError('');
     try {
       const { job } = await api.push();
@@ -174,18 +180,17 @@ export function ChannelsPage() {
     }
     if (!window.confirm(
       `Restore ersatztv.sqlite3 from backup ${latestPushBackup.id}?\n\n` +
-        'If ErsatzTV has the DB locked, stop it first, roll back, then start it again.',
+        'Generation will pause. If ErsatzTV has the DB locked, stop it first, then run rollback.',
     )) {
       return;
     }
     setBusy(true);
-    setRollbackMessage('');
     setError('');
     try {
-      const result = await api.rollback(latestPushBackup.id);
-      setRollbackMessage(result.message);
-      await refreshChannels();
-      await refreshBackups();
+      const { job } = await api.rollback(latestPushBackup.id);
+      userExpandedRef.current = true;
+      setExpandedJobId(job.id);
+      stickToBottomRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -214,15 +219,19 @@ export function ChannelsPage() {
           </div>
           <div className="row">
             <button className="secondary" disabled={busy} onClick={() => void refreshChannels()}>Refresh</button>
-            <button disabled={busy || pushActive} title={pushActive ? 'Paused while push is running' : undefined} onClick={() => void generateAll()}>
+            <button
+              disabled={busy || exclusiveActive}
+              title={exclusiveActive ? 'Paused while push/rollback is running' : undefined}
+              onClick={() => void generateAll()}
+            >
               Generate all
             </button>
-            <button className="success" disabled={busy || pushActive} onClick={() => void push()}>
-              {pushActive ? 'Push running…' : 'Push to ErsatzTV'}
+            <button className="success" disabled={busy || exclusiveActive} onClick={() => void push()}>
+              Push to ErsatzTV
             </button>
             <button
               className="danger"
-              disabled={busy || pushActive || !latestPushBackup}
+              disabled={busy || exclusiveActive || !latestPushBackup}
               title={latestPushBackup ? `Restore backup ${latestPushBackup.id}` : 'No pre-push backup yet'}
               onClick={() => void rollback()}
             >
@@ -231,10 +240,9 @@ export function ChannelsPage() {
           </div>
         </div>
         {error && <p className="error">{error}</p>}
-        {rollbackMessage && <p className="success">{rollbackMessage}</p>}
-        {pushActive && (
+        {exclusiveActive && (
           <p className="muted" style={{ marginTop: 8 }}>
-            Push job is active — generate jobs are paused until it finishes. Open the Jobs panel for live logs.
+            Push/rollback job is active — generate jobs are paused. Open the Jobs panel for live logs.
           </p>
         )}
         {latestPushBackup && (
@@ -253,7 +261,9 @@ export function ChannelsPage() {
           <h2 style={{ marginBottom: 0 }}>Jobs</h2>
           <span className="muted" style={{ fontSize: 13 }}>
             {streamStatus === 'live'
-              ? (jobsActive ? (pushActive ? 'Live via SSE · push pausing generate' : 'Live via SSE') : 'SSE connected · idle')
+              ? (jobsActive
+                ? (exclusiveActive ? 'Live via SSE · push/rollback pausing generate' : 'Live via SSE')
+                : 'SSE connected · idle')
               : streamStatus === 'reconnecting'
                 ? 'SSE reconnecting…'
                 : 'Connecting SSE…'}
@@ -265,15 +275,17 @@ export function ChannelsPage() {
             const open = expandedJobId === j.id;
             const latest = j.logs?.[j.logs.length - 1];
             const kind = j.kind ?? 'generate';
+            const kindClass =
+              kind === 'push' ? 'push' : kind === 'rollback' ? 'rollback' : 'gen';
             return (
-              <div className={`job-block ${open ? 'open' : ''} ${kind === 'push' ? 'job-push' : ''}`} key={j.id}>
+              <div className={`job-block ${open ? 'open' : ''} job-${kindClass}`} key={j.id}>
                 <button
                   type="button"
                   className="job job-toggle"
                   onClick={() => toggleJob(j.id, open)}
                 >
                   <span>
-                    <span className={`badge ${kind === 'push' ? 'push' : 'gen'}`}>{kind}</span>
+                    <span className={`badge ${kindClass}`}>{kind}</span>
                     {' '}
                     <strong>{j.channelName}</strong>
                     {kind === 'generate' && <span className="muted"> #{j.channelNumber}</span>}
@@ -389,8 +401,8 @@ export function ChannelsPage() {
 
               <div className="row">
                 <button
-                  disabled={busy || pushActive || !ch.enabled}
-                  title={pushActive ? 'Paused while push is running' : undefined}
+                  disabled={busy || exclusiveActive || !ch.enabled}
+                  title={exclusiveActive ? 'Paused while push/rollback is running' : undefined}
                   onClick={() => void generateOne(ch.number)}
                 >
                   Generate

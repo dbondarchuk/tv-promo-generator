@@ -61,7 +61,7 @@ export interface ScheduleItemPreview {
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'late';
 
-export type JobKind = 'generate' | 'push';
+export type JobKind = 'generate' | 'push' | 'rollback';
 
 export type JobLogLevel = 'info' | 'warn' | 'error';
 
@@ -83,6 +83,8 @@ export interface JobInfo {
   deadline?: string;
   error?: string;
   late?: boolean;
+  /** Set for rollback jobs — ErsatzTV backup id to restore. */
+  backupId?: string;
   logs: JobLogEntry[];
 }
 

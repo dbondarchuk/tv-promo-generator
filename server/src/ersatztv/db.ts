@@ -44,25 +44,36 @@ export function stripTitleYear(title: string): string {
 
 let schemaCache: DbSchema | null = null;
 
-export function openDb(dbPath: string, readonly: boolean): Database.Database {
+export function openDb(
+  dbPath: string,
+  readonly: boolean,
+  opts: { busyTimeoutMs?: number } = {},
+): Database.Database {
   if (!dbPath) {
     throw new Error('ErsatzTV database path is not configured');
   }
   if (!fs.existsSync(dbPath)) {
     throw new Error(`ErsatzTV database not found: ${dbPath}`);
   }
-  const db = new Database(dbPath, { readonly, fileMustExist: true, timeout: 5000 });
-  db.pragma('busy_timeout = 5000');
+  const busyTimeoutMs = opts.busyTimeoutMs ?? 8_000;
+  const db = new Database(dbPath, { readonly, fileMustExist: true, timeout: busyTimeoutMs });
+  db.pragma(`busy_timeout = ${busyTimeoutMs}`);
   if (readonly) {
     try {
       db.pragma('query_only = ON');
     } catch {
       // older sqlite may not support query_only
     }
-  } else {
-    db.pragma('journal_mode = WAL');
   }
+  // Do not force journal_mode=WAL — that needs an exclusive lock and can hang
+  // while ErsatzTV has the database open.
   return db;
+}
+
+/** Manual collection + filler names for a channel's next-items promo. */
+export function promoNextNames(channelName: string): { collection: string; filler: string } {
+  const base = `Promo Generator - Next - ${channelName}`;
+  return { collection: base, filler: base };
 }
 
 export function loadSchema(db: Database.Database): DbSchema {
@@ -475,10 +486,67 @@ export function getPreRollFillerName(db: Database.Database, fillerId: number | n
   return row?.name;
 }
 
-export function upsertFillerPreset(
+/**
+ * Create/update a manual Collection that contains exactly one media item.
+ * CollectionType.Collection = 0 in FillerPreset; items live in CollectionItem.
+ */
+export function upsertManualCollection(
   db: Database.Database,
   name: string,
   mediaItemId: number,
+): { id: number; created: boolean } {
+  const schema = loadSchema(db);
+  requireTable(schema, 'Collection');
+  requireTable(schema, 'CollectionItem');
+  requireColumns(schema, 'Collection', ['Id', 'Name']);
+  requireColumns(schema, 'CollectionItem', ['CollectionId', 'MediaItemId']);
+
+  const cols = schema.columns.get('Collection') ?? new Set();
+  let existing = db.prepare(`SELECT Id AS id FROM Collection WHERE Name = ?`).get(name) as
+    | { id: number }
+    | undefined;
+  let created = false;
+
+  if (!existing) {
+    const insertCols = ['Name'];
+    const insertVals: Array<string | number> = [name];
+    if (cols.has('UseCustomPlaybackOrder')) {
+      insertCols.push('UseCustomPlaybackOrder');
+      insertVals.push(0);
+    }
+    const placeholders = insertCols.map(() => '?').join(', ');
+    const info = db
+      .prepare(`INSERT INTO Collection (${insertCols.join(', ')}) VALUES (${placeholders})`)
+      .run(...insertVals);
+    existing = { id: Number(info.lastInsertRowid) };
+    created = true;
+  }
+
+  // Replace membership so the collection always points at the current promo file.
+  db.prepare(`DELETE FROM CollectionItem WHERE CollectionId = ?`).run(existing.id);
+  const itemCols = schema.columns.get('CollectionItem') ?? new Set();
+  if (itemCols.has('CustomIndex')) {
+    db.prepare(
+      `INSERT INTO CollectionItem (CollectionId, MediaItemId, CustomIndex) VALUES (?, ?, 0)`,
+    ).run(existing.id, mediaItemId);
+  } else {
+    db.prepare(`INSERT INTO CollectionItem (CollectionId, MediaItemId) VALUES (?, ?)`).run(
+      existing.id,
+      mediaItemId,
+    );
+  }
+
+  return { id: existing.id, created };
+}
+
+/**
+ * Pre-roll filler preset that plays count=1 from a manual Collection.
+ * CollectionType.Collection = 0 (not OtherVideo/MediaItem).
+ */
+export function upsertFillerPresetForCollection(
+  db: Database.Database,
+  name: string,
+  collectionId: number,
 ): { id: number; created: boolean } {
   const schema = loadSchema(db);
   requireColumns(schema, 'FillerPreset', [
@@ -487,7 +555,7 @@ export function upsertFillerPreset(
     'FillerMode',
     'Count',
     'CollectionType',
-    'MediaItemId',
+    'CollectionId',
     'AllowWatermarks',
   ]);
 
@@ -495,7 +563,7 @@ export function upsertFillerPreset(
     | { id: number }
     | undefined;
   const cols = schema.columns.get('FillerPreset') ?? new Set();
-  // FillerKind PreRoll = 1, FillerMode Count = 2, CollectionType OtherVideo = 40
+  // FillerKind PreRoll = 1, FillerMode Count = 2, CollectionType Collection = 0
   if (existing) {
     db.prepare(
       `
@@ -503,21 +571,29 @@ export function upsertFillerPreset(
       SET FillerKind = 1,
           FillerMode = 2,
           Count = 1,
-          CollectionType = 40,
-          MediaItemId = ?,
+          CollectionType = 0,
+          CollectionId = ?,
+          MediaItemId = NULL,
           AllowWatermarks = 0,
-          CollectionId = NULL,
           MultiCollectionId = NULL,
           SmartCollectionId = NULL,
           PlaylistId = NULL
       WHERE Id = ?
     `,
-    ).run(mediaItemId, existing.id);
+    ).run(collectionId, existing.id);
     return { id: existing.id, created: false };
   }
 
-  const insertCols = ['Name', 'FillerKind', 'FillerMode', 'Count', 'CollectionType', 'MediaItemId', 'AllowWatermarks'];
-  const insertVals: Array<string | number> = [name, 1, 2, 1, 40, mediaItemId, 0];
+  const insertCols = [
+    'Name',
+    'FillerKind',
+    'FillerMode',
+    'Count',
+    'CollectionType',
+    'CollectionId',
+    'AllowWatermarks',
+  ];
+  const insertVals: Array<string | number> = [name, 1, 2, 1, 0, collectionId, 0];
   if (cols.has('UseChaptersAsMediaItems')) {
     insertCols.push('UseChaptersAsMediaItems');
     insertVals.push(0);

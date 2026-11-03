@@ -3,7 +3,6 @@ import type {
   ChannelView,
   EtvBackupInfo,
   JobInfo,
-  RollbackResult,
   ValidateSettingsResult,
 } from '@promo/shared';
 
@@ -65,7 +64,7 @@ export const api = {
     request<{ backups: EtvBackupInfo[]; latestPush: EtvBackupInfo | null }>('/api/backups'),
   createBackup: () => request<EtvBackupInfo>('/api/backups', { method: 'POST', body: '{}' }),
   rollback: (backupId?: string) =>
-    request<RollbackResult>('/api/rollback', {
+    request<{ job: JobInfo }>('/api/rollback', {
       method: 'POST',
       body: JSON.stringify(backupId ? { backupId } : {}),
     }),

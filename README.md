@@ -31,7 +31,7 @@ Each promo is written as `{output}/{channel}/next-items.mp4`.
 | **Graphics** | Channel logo, logo-derived color bar, localized “Next / After that” headlines + start time |
 | **Voice** | Piper (Wyoming) preferred; Edge TTS then Windows SAPI fallbacks; pause between cue and title |
 | **Automation** | Scheduler regenerates when the current item is within `REGEN_LEAD_MINUTES` of ending |
-| **Push** | Creates an Other Video library, filler presets, wires classic schedules as count-1 pre-rolls |
+| **Push** | Other Video library + per-channel manual collections + pre-roll fillers on classic schedules |
 
 ---
 
@@ -128,13 +128,14 @@ A background scheduler (default every 60s) checks enabled channels. When the cur
 
 ## Push to ErsatzTV
 
-The **Push** button:
+The **Push** button (runs as a job; pauses generate):
 
 1. Creates/updates local Other Video library **Promo Generator** (folder = `ETV_LIBRARY_PATH`)
 2. Scans the library
-3. Upserts filler preset `Promo pre-roll {channel number}` (count **1**)
-4. Sets that preset as `PreRollFillerId` on classic schedule items
-5. Resets the channel playout
+3. Upserts manual collection `Promo Generator - Next - {channel name}` with that channel’s promo video
+4. Upserts filler preset with the same name (count **1**, collection-based)
+5. Sets that preset as `PreRollFillerId` on classic schedule items
+6. Resets the channel playout
 
 Skipped (with reason) when the playout is not classic, or the schedule is shared by multiple channels.
 

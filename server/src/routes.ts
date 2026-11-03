@@ -15,7 +15,6 @@ import {
   backupErsatzTvDatabase,
   getLatestPushBackup,
   listErsatzTvBackups,
-  rollbackErsatzTvDatabase,
 } from './services/etv-backup.js';
 import { JobQueue } from './services/jobs.js';
 import { validateSettings } from './services/validate-settings.js';
@@ -107,13 +106,12 @@ export function createRouter(opts: {
     }
   });
 
-  router.post('/rollback', async (req, res) => {
+  router.post('/rollback', (req, res) => {
     try {
       const backupId = typeof req.body?.backupId === 'string' ? req.body.backupId : undefined;
-      log.info('rollback ErsatzTV database', { backupId: backupId ?? 'latest' });
-      const result = await rollbackErsatzTvDatabase(opts.getSettings(), backupId);
-      invalidateChannelCaches();
-      res.json(result);
+      log.info('enqueue rollback ErsatzTV database', { backupId: backupId ?? 'latest' });
+      const job = opts.jobs.enqueueRollback(backupId);
+      res.json({ job });
     } catch (err) {
       log.error('POST /rollback failed', err instanceof Error ? err.message : String(err));
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
