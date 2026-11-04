@@ -103,7 +103,7 @@ export class RegenScheduler {
           );
 
           if (!current) {
-            if (missing) {
+            if (missing && !this.jobs.hasPendingGenerate(channel.number)) {
               log.info("scheduler enqueue (missing promo, no current item)", {
                 channel: channel.name,
                 number: channel.number,
@@ -122,23 +122,60 @@ export class RegenScheduler {
           }
 
           const finish = fromSqliteUtc(current.finish);
-          const deadline = new Date(finish.getTime() - leadMs);
-          const itemShort = finish.getTime() - now.getTime() < leadMs;
+          const itemStart = fromSqliteUtc(current.start);
 
-          if (missing || itemShort || deadline.getTime() <= now.getTime()) {
+          // Regen window opens this far before the current item ends.
+          const regenAt = new Date(finish.getTime() - leadMs);
+
+          // Promo must be ready by the time the current item ends — not by regenAt,
+          // or every in-window enqueue would already be "late".
+          const readyBy = finish;
+          const remainingMs = finish.getTime() - now.getTime();
+          const itemShort = remainingMs < leadMs;
+          const inLeadWindow = regenAt.getTime() <= now.getTime();
+
+          // One auto job per current airing (same next-items). Manual generate bypasses this.
+          const lastGenAt = this.jobs.getLastGenerated(channel.number);
+          const alreadyGeneratedForItem =
+            Boolean(lastGenAt) &&
+            new Date(lastGenAt!).getTime() >= itemStart.getTime() &&
+            !missing;
+
+          if (alreadyGeneratedForItem) {
+            log.debug("scheduler skip (already generated for current item)", {
+              channel: channel.name,
+              number: channel.number,
+              lastGenAt,
+              itemStart: itemStart.toISOString(),
+            });
+
+            continue;
+          }
+
+          if (this.jobs.hasPendingGenerate(channel.number)) {
+            log.debug("scheduler skip (generate already pending)", {
+              channel: channel.name,
+              number: channel.number,
+            });
+
+            continue;
+          }
+
+          if (missing || itemShort || inLeadWindow) {
             log.info("scheduler enqueue", {
               channel: channel.name,
               number: channel.number,
               missing,
               itemShort,
-              deadline: deadline.toISOString(),
+              inLeadWindow,
+              readyBy: readyBy.toISOString(),
               finish: finish.toISOString(),
             });
 
             this.jobs.enqueue({
               channelNumber: channel.number,
               channelName: channel.name,
-              deadline,
+              deadline: readyBy,
               preferFront: missing || itemShort,
             });
 

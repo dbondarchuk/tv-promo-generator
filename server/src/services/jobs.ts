@@ -23,6 +23,11 @@ const log = createLogger("jobs");
 const MAX_LOGS_PER_JOB = 400;
 const BLOCKING_KINDS: JobKind[] = ["push", "rollback"];
 
+/** Waiting or in-flight — includes legacy status "late" used as a queue state. */
+function isPendingStatus(status: JobInfo["status"]): boolean {
+  return status === "queued" || status === "running" || status === "late";
+}
+
 type Listener = (jobs: JobInfo[]) => void;
 
 interface InternalJob extends JobInfo {
@@ -64,6 +69,15 @@ export class JobQueue {
     return this.lastErrors.get(channelNumber);
   }
 
+  hasPendingGenerate(channelNumber: string): boolean {
+    return [...this.jobs.values()].some(
+      (j) =>
+        j.kind === "generate" &&
+        j.channelNumber === channelNumber &&
+        isPendingStatus(j.status),
+    );
+  }
+
   /** Push/rollback pause generate until they finish. */
   hasBlockingJob(): boolean {
     return [...this.jobs.values()].some(
@@ -88,7 +102,7 @@ export class JobQueue {
       (j) =>
         j.kind === "generate" &&
         j.channelNumber === opts.channelNumber &&
-        (j.status === "queued" || j.status === "running"),
+        isPendingStatus(j.status),
     );
 
     if (existingQueued) {
@@ -102,13 +116,15 @@ export class JobQueue {
     }
 
     const id = `gen-${opts.channelNumber}-${Date.now()}`;
+    // Keep status "queued" while waiting — "late" is a flag/label only.
+    // Using status:"late" broke dedupe and re-enqueued every scheduler tick.
     const late = Boolean(opts.deadline && opts.deadline.getTime() < Date.now());
     const job: InternalJob = {
       id,
       kind: "generate",
       channelNumber: opts.channelNumber,
       channelName: opts.channelName,
-      status: late ? "late" : "queued",
+      status: "queued",
       queuedAt: new Date().toISOString(),
       deadline: opts.deadline?.toISOString(),
       late,
@@ -245,7 +261,10 @@ export class JobQueue {
     );
 
     for (const other of this.jobs.values()) {
-      if (other.kind === "generate" && other.status === "queued") {
+      if (
+        other.kind === "generate" &&
+        (other.status === "queued" || other.status === "late")
+      ) {
         this.appendLog(other.id, "warn", opts.pauseMessage, false);
       }
     }
