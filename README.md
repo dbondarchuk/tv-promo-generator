@@ -210,9 +210,10 @@ Per-channel language drives overlays and VO templates (e.g. `uk` → Ukrainian).
 ErsatzTV plays fillers from a **Remote Stream** that points at this app:
 
 ```yml
-url: http://tv-promo-generator:5174/live/{channelNumber}/promo.ts
+url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.ts"
 is_live: true
-duration: 00:00:30
+duration: "00:00:30"
+title: "Promo Generator - Next - {channel name}"
 ```
 
 When ETV opens the URL, this app live-encodes the current “next up” set as **MPEG-TS** over HTTP. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).

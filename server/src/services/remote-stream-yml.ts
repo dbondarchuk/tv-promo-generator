@@ -35,6 +35,11 @@ function posixJoinRoot(root: string, channelName: string): string {
   );
 }
 
+/** Double-quoted YAML scalar safe for channel names that contain `: `. */
+function yamlString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 /** Write / update the Remote Stream definition under outputPath. */
 export function writeChannelRemoteStreamYaml(
   settings: AppSettings,
@@ -59,11 +64,13 @@ export function writeChannelRemoteStreamYaml(
   const timing = getPromoTiming(settings.promoItemCount);
   const url = livePromoUrl(base, channelNumber);
   const duration = formatPromoDuration(timing.totalSeconds);
+  // Quote strings — unquoted titles with ": " (e.g. "Movies: Comedy") are invalid YAML
+  // and ErsatzTV's scanner drops the file. Duration must stay a string for TimeSpan.TryParse.
   const body = [
-    `url: ${url}`,
+    `url: ${yamlString(url)}`,
     `is_live: true`,
-    `duration: ${duration}`,
-    `title: Promo Generator - Next - ${channelName}`,
+    `duration: ${yamlString(duration)}`,
+    `title: ${yamlString(`Promo Generator - Next - ${channelName}`)}`,
     "",
   ].join("\n");
 
