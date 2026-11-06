@@ -309,7 +309,6 @@ export function createRouter(opts: {
     }
   });
 
-
   router.get("/jobs", (_req, res) => {
     res.json(opts.jobs.list());
   });
@@ -510,7 +509,11 @@ export function createLiveRouter(getSettings: () => AppSettings): Router {
   }
 
   router.get("/:channelNumber/promo.ts", async (req, res) => {
-    await handleLive(decodeURIComponent(req.params.channelNumber), res, "mpegts");
+    await handleLive(
+      decodeURIComponent(req.params.channelNumber),
+      res,
+      "mpegts",
+    );
   });
 
   router.get("/:channelNumber/preview.mp4", async (req, res) => {

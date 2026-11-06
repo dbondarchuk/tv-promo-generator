@@ -4,38 +4,56 @@ import path from "node:path";
 import { getPromoTiming } from "../promo/layout.js";
 import { formatPromoDuration, livePromoUrl } from "./livePromo.js";
 
-export function resolveRemoteStreamsPath(settings: AppSettings): string {
-  return (
-    settings.etvRemoteStreamsPath?.trim() ||
-    settings.etvLibraryPath?.trim() ||
-    settings.outputPath
-  );
+/** Where this app writes `{channel}/next-items.yml` (container-local path). */
+export function resolveRemoteStreamsWritePath(settings: AppSettings): string {
+  return settings.outputPath;
+}
+
+/**
+ * Same folder as ErsatzTV sees it (LibraryPath / scan) — uses ETV library path.
+ */
+export function resolveRemoteStreamsEtvPath(settings: AppSettings): string {
+  return settings.etvLibraryPath?.trim() || settings.outputPath;
 }
 
 export function remoteStreamYamlPath(
-  remoteStreamsRoot: string,
+  root: string,
   channelName: string,
 ): string {
   return path.join(
-    remoteStreamsRoot,
+    root,
     sanitizeChannelFolderName(channelName),
     "next-items.yml",
   );
 }
 
-/** Write / update the Remote Stream definition ETV will scan. */
+function posixJoinRoot(root: string, channelName: string): string {
+  return path.posix.join(
+    root.replace(/\\/g, "/").replace(/\/+$/, ""),
+    sanitizeChannelFolderName(channelName),
+    "next-items.yml",
+  );
+}
+
+/** Write / update the Remote Stream definition under outputPath. */
 export function writeChannelRemoteStreamYaml(
   settings: AppSettings,
   channelNumber: string,
   channelName: string,
-): { yamlPath: string; etvRelative: string; url: string } {
+): {
+  yamlPath: string;
+  etvFilePath: string;
+  etvRelative: string;
+  url: string;
+} {
   const base = settings.etvOnDemandBaseUrl?.trim();
   if (!base) {
     throw new Error("etvOnDemandBaseUrl is required for Remote Stream push");
   }
 
-  const root = resolveRemoteStreamsPath(settings);
-  const yamlPath = remoteStreamYamlPath(root, channelName);
+  const writeRoot = resolveRemoteStreamsWritePath(settings);
+  const etvRoot = resolveRemoteStreamsEtvPath(settings);
+  const yamlPath = remoteStreamYamlPath(writeRoot, channelName);
   fs.mkdirSync(path.dirname(yamlPath), { recursive: true });
 
   const timing = getPromoTiming(settings.promoItemCount);
@@ -56,5 +74,10 @@ export function writeChannelRemoteStreamYaml(
     "next-items.yml",
   );
 
-  return { yamlPath, etvRelative, url };
+  return {
+    yamlPath,
+    etvFilePath: posixJoinRoot(etvRoot, channelName),
+    etvRelative,
+    url,
+  };
 }

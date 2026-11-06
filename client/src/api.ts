@@ -51,13 +51,10 @@ export const api = {
       body: "{}",
     }),
   voPrewarmOne: (number: string) =>
-    request<{ job: JobInfo }>(
-      `/api/vo-prewarm/${encodeURIComponent(number)}`,
-      {
-        method: "POST",
-        body: "{}",
-      },
-    ),
+    request<{ job: JobInfo }>(`/api/vo-prewarm/${encodeURIComponent(number)}`, {
+      method: "POST",
+      body: "{}",
+    }),
   getJobs: () => request<JobInfo[]>("/api/jobs"),
   /** Live job updates via SSE. Returns an unsubscribe function. */
   subscribeJobs: (

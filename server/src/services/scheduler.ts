@@ -51,6 +51,7 @@ export class RegenScheduler {
     try {
       const settings = this.settingsProvider();
       if (!settings.etvDatabase) return;
+
       if (!settings.voiceEnabled) {
         log.debug("scheduler skip (voice disabled)");
         return;

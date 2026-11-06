@@ -172,10 +172,17 @@ export function SettingsPage() {
           {field("etvDatabase", "ersatztv.sqlite3 path")}
           {field("libraryPath", "Library path (local mount)")}
           {field("etvPathPrefix", "ErsatzTV path prefix to rewrite")}
-          {field("outputPath", "Output path")}
+          {field(
+            "outputPath",
+            "Output path (this app writes YAML here)",
+            "text",
+            "/data/output",
+          )}
           {field(
             "etvLibraryPath",
-            "ErsatzTV library path (legacy Other Video / fallback)",
+            "ErsatzTV library path (same folder as ETV sees it)",
+            "text",
+            "/media/videos/promos",
           )}
           {field(
             "etvOnDemandBaseUrl",
@@ -183,20 +190,15 @@ export function SettingsPage() {
             "text",
             "http://tv-promo-generator:5174",
           )}
-          {field(
-            "etvRemoteStreamsPath",
-            "Remote Streams folder (YAML path ETV scans)",
-            "text",
-            "/promos",
-          )}
           {field("regenLeadMinutes", "Regen lead time (minutes)", "number")}
           {field("timeZone", "Display timezone (IANA, e.g. America/New_York)")}
         </div>
         <p className="muted">
-          Live promos use ErsatzTV Remote Streams: set the base URL (e.g.{" "}
-          <code>http://tv-promo-generator:5174</code>) and a folder mounted into
-          both containers for <code>next-items.yml</code> definitions. VO warms
-          when each primary starts; playback is HTTP MPEG-TS at{" "}
+          Push writes <code>next-items.yml</code> under{" "}
+          <strong>Output path</strong> and registers a Remote Streams library at{" "}
+          <strong>ErsatzTV library path</strong> (same host folder, ETV’s
+          mount). On-demand base URL example:{" "}
+          <code>http://tv-promo-generator:5174</code> → live{" "}
           <code>/live/{"{channel}"}/promo.ts</code>.
         </p>
       </section>

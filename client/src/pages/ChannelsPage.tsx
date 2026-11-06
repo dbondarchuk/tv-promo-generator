@@ -12,8 +12,8 @@ import {
 } from "@promo/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { LivePromoPreview } from "../components/LivePromoPreview";
 import { api } from "../api";
+import { LivePromoPreview } from "../components/LivePromoPreview";
 
 const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
   pre: true,

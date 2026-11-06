@@ -70,11 +70,6 @@ export interface AppSettings {
    * (e.g. http://tv-promo-generator:5174). Used in Remote Stream YAML.
    */
   etvOnDemandBaseUrl: string;
-  /**
-   * Folder for Remote Stream `.yml` definitions as ErsatzTV (and this app) see it.
-   * Empty → fall back to etvLibraryPath / outputPath.
-   */
-  etvRemoteStreamsPath: string;
   cachePath: string;
   configPath: string;
   port: number;
@@ -317,7 +312,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   outputPath: "./output",
   etvLibraryPath: "",
   etvOnDemandBaseUrl: "",
-  etvRemoteStreamsPath: "",
   cachePath: "./cache",
   configPath: "./config",
   port: 5174,

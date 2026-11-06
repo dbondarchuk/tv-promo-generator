@@ -51,7 +51,11 @@ export function loadVoiceLedger(cachePath: string): VoiceLedgerFile {
 function saveVoiceLedger(cachePath: string, ledger: VoiceLedgerFile): void {
   const dir = voiceCacheDir(cachePath);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(ledgerPath(cachePath), JSON.stringify(ledger, null, 2), "utf8");
+  fs.writeFileSync(
+    ledgerPath(cachePath),
+    JSON.stringify(ledger, null, 2),
+    "utf8",
+  );
 }
 
 /**

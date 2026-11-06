@@ -382,6 +382,7 @@ async function mixVoiceTrack(
 
 function resolveVoiceMode(req: PromoRenderRequest): PromoVoiceMode {
   if (!req.voiceEnabled) return "off";
+
   return req.voiceMode ?? "synthesize";
 }
 

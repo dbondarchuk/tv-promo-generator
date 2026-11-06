@@ -11,8 +11,8 @@ import path from "node:path";
 import { renderPromo } from "../promo/render.js";
 import { createLogger } from "../util/log.js";
 import { promoOutputFile } from "../util/paths.js";
-import { synthesizeVoiceOver, voiceCacheKey } from "../voice/tts.js";
 import { recordVoiceGeneration } from "../voice/ledger.js";
+import { synthesizeVoiceOver, voiceCacheKey } from "../voice/tts.js";
 import {
   buildPromoChaptersForChannel,
   getFontFile,
@@ -229,7 +229,13 @@ export class JobQueue {
       (a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority,
     );
 
-    this.appendLog(id, "info", `Queued VO prewarm · position ${this.queue.length}`, false);
+    this.appendLog(
+      id,
+      "info",
+      `Queued VO prewarm · position ${this.queue.length}`,
+      false,
+    );
+
     log.info("vo-prewarm queued", {
       id,
       channel: opts.channelName,
@@ -417,10 +423,7 @@ export class JobQueue {
         continue;
       }
 
-      if (
-        (job.kind === "generate" || job.kind === "vo-prewarm") &&
-        blocking
-      ) {
+      if ((job.kind === "generate" || job.kind === "vo-prewarm") && blocking) {
         continue;
       }
 

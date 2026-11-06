@@ -108,12 +108,11 @@ If the DB already stores paths that exist as-is inside this container, leave the
 
 | Setting | Role |
 |---|---|
-| **Output path** | Where this app **writes** preview `{channel}/next-items.mp4` (container path, e.g. `/data/output`) |
-| **ErsatzTV library path** | Fallback / legacy Other Video path |
-| **On-demand base URL** | How ErsatzTV reaches this app (e.g. `http://tv-promo-generator:5174`) for live `/live/{channel}/promo.ts` |
-| **Remote Streams path** | Folder for per-channel `next-items.yml` definitions (mount into both containers; ETV Remote Streams library) |
+| **Output path** | Where this app **writes** `{channel}/next-items.yml` (e.g. `/data/output`) |
+| **ErsatzTV library path** | Same folder **as ErsatzTV sees it** (e.g. `/media/videos/promos`) — Remote Streams library registration / scan |
+| **On-demand base URL** | How ErsatzTV reaches this app (e.g. `http://tv-promo-generator:5174`) |
 
-Air playback is **live HTTP MPEG-TS**, not an on-disk MP4. Use **Preview live** on Channels for a browser fMP4 preview.
+Mount the same host folder into both containers (different path strings are fine). Air playback is live HTTP MPEG-TS; use **Preview live** on Channels for browser preview.
 
 ---
 
@@ -133,7 +132,7 @@ Stored in `config/settings.json`. Port, cache, config path, log level, and ffmpe
 | **Output path** | Directory for generated promos (e.g. `/data/output`) |
 | **ErsatzTV library path** | Promo folder as ErsatzTV sees it (e.g. `/promos`) |
 | **On-demand base URL** | Base URL ErsatzTV uses for live promos (must be reachable from the ETV container) |
-| **Remote Streams path** | Directory for Remote Stream YAML (empty → library / output path) |
+| **ErsatzTV library path** | Same promo folder as ETV sees (Remote Streams library); empty → output path |
 | **Regen lead time (minutes)** | Legacy setting (VO now warms at current-item start) |
 | **Display timezone** | IANA zone for on-screen / spoken start times (e.g. `America/New_York`). Empty → use `TIME_ZONE` / `TZ` env |
 
@@ -229,8 +228,8 @@ When ETV opens the URL, this app live-encodes the current “next up” set as *
 
 **Push** runs as a job (pauses generate / VO prewarm):
 
-1. Writes per-channel `next-items.yml` under the Remote Streams path (URL = on-demand base + `/live/...`)
-2. Creates/updates Remote Stream library **Promo Generator Streams**
+1. Writes per-channel `next-items.yml` under Output path (URL = on-demand base + `/live/...`)
+2. Creates/updates Remote Stream library **Promo Generator Streams** at ErsatzTV library path
 3. Scans the library
 4. Upserts manual collection `Promo Generator - Next - {channel name}` with that channel’s `.yml` media item
 5. Upserts typed filler presets and wires selected schedule slots (pre / middle / post / tail)

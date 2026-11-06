@@ -178,9 +178,14 @@ function normalizeSettings(
   const timeZone =
     fileTimeZone || env("TIME_ZONE") || env("TZ") || DEFAULT_SETTINGS.timeZone;
 
+  // Drop removed setting if present in older settings.json
+  const { etvRemoteStreamsPath: _removedRemoteStreamsPath, ...fromFileRest } =
+    fromFile as Partial<AppSettings> &
+      LegacyVoiceFields & { etvRemoteStreamsPath?: string };
+
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
-    ...fromFile,
+    ...fromFileRest,
     ...infra,
     timeZone,
     piperVoiceByLanguage: resolvePiperVoiceByLanguage(fromFile),
@@ -217,12 +222,6 @@ function normalizeSettings(
 
   if (typeof merged.etvOnDemandBaseUrl !== "string") {
     merged.etvOnDemandBaseUrl = DEFAULT_SETTINGS.etvOnDemandBaseUrl;
-  }
-
-  if (typeof merged.etvRemoteStreamsPath !== "string") {
-    merged.etvRemoteStreamsPath = DEFAULT_SETTINGS.etvRemoteStreamsPath;
-  } else if (merged.etvRemoteStreamsPath.trim()) {
-    merged.etvRemoteStreamsPath = path.resolve(merged.etvRemoteStreamsPath);
   }
 
   return merged;

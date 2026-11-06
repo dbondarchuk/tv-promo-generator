@@ -4,10 +4,7 @@ import { useEffect, useRef, useState } from "react";
  * Click-to-start live fMP4 preview. Avoids auto-starting an ffmpeg encode for
  * every channel card (which left the native play control stuck / unusable).
  */
-export function LivePromoPreview(props: {
-  src: string;
-  channelLabel: string;
-}) {
+export function LivePromoPreview(props: { src: string; channelLabel: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [active, setActive] = useState(false);
   const [error, setError] = useState("");

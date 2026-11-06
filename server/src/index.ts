@@ -7,11 +7,7 @@ import { fileURLToPath } from "node:url";
 import { loadSettings } from "./config.js";
 import { loadEnv } from "./env.js";
 import { assertFfmpegAvailable } from "./ffmpeg/binaries.js";
-import {
-  createLiveRouter,
-  createMediaRouter,
-  createRouter,
-} from "./routes.js";
+import { createLiveRouter, createMediaRouter, createRouter } from "./routes.js";
 import { JobQueue } from "./services/jobs.js";
 import { RegenScheduler } from "./services/scheduler.js";
 import { createLogger } from "./util/log.js";

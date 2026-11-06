@@ -146,22 +146,16 @@ export async function validateSettings(
   }
 
   checks.push(dirStatus(settings.libraryPath, "Library path", false));
-  checks.push(dirStatus(settings.outputPath, "Output path", true));
+  checks.push(dirStatus(settings.outputPath, "Output path (YAML write)", true));
+
   checks.push(dirStatus(settings.cachePath, "Cache path", true));
   checks.push(
     dirStatus(
       settings.etvLibraryPath || settings.outputPath,
-      "ETV library path",
+      "ETV library path (Remote Streams)",
       true,
     ),
   );
-
-  const remoteRoot =
-    settings.etvRemoteStreamsPath?.trim() ||
-    settings.etvLibraryPath?.trim() ||
-    settings.outputPath;
-
-  checks.push(dirStatus(remoteRoot, "Remote Streams path", true));
 
   const onDemand = settings.etvOnDemandBaseUrl?.trim();
   if (!onDemand) {
@@ -186,12 +180,7 @@ export async function validateSettings(
       );
     } catch {
       checks.push(
-        check(
-          "etvOnDemandBaseUrl",
-          "On-demand base URL",
-          false,
-          "Invalid URL",
-        ),
+        check("etvOnDemandBaseUrl", "On-demand base URL", false, "Invalid URL"),
       );
     }
   }
