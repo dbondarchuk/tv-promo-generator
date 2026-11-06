@@ -65,6 +65,16 @@ export interface AppSettings {
   etvPathPrefix: string;
   outputPath: string;
   etvLibraryPath: string;
+  /**
+   * Base URL ErsatzTV uses to reach this app for live promos
+   * (e.g. http://tv-promo-generator:5174). Used in Remote Stream YAML.
+   */
+  etvOnDemandBaseUrl: string;
+  /**
+   * Folder for Remote Stream `.yml` definitions as ErsatzTV (and this app) see it.
+   * Empty → fall back to etvLibraryPath / outputPath.
+   */
+  etvRemoteStreamsPath: string;
   cachePath: string;
   configPath: string;
   port: number;
@@ -165,7 +175,7 @@ export const CHANNEL_LANGUAGES = [
 
 export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]["code"];
 
-export type JobKind = "generate" | "push" | "rollback";
+export type JobKind = "generate" | "vo-prewarm" | "push" | "rollback";
 
 export type JobLogLevel = "info" | "warn" | "error";
 
@@ -244,8 +254,15 @@ export interface ChannelView {
   nextItems: ScheduleItemPreview[];
   currentItem?: ScheduleItemPreview;
   nextRegenAt?: string;
+  /** True when a baked preview MP4 exists on disk (manual Generate). */
   promoExists: boolean;
+  /** Baked MP4 URL for download/legacy preview, if present. */
   promoUrl?: string;
+  /**
+   * Live fragmented-MP4 preview for the Channels page
+   * (`/live/{number}/preview.mp4`). Prefer this over promoUrl in the UI.
+   */
+  livePromoUrl?: string;
   lastError?: string;
   lastGeneratedAt?: string;
 }
@@ -299,6 +316,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   etvPathPrefix: "",
   outputPath: "./output",
   etvLibraryPath: "",
+  etvOnDemandBaseUrl: "",
+  etvRemoteStreamsPath: "",
   cachePath: "./cache",
   configPath: "./config",
   port: 5174,

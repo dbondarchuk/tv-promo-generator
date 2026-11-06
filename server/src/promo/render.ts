@@ -1,6 +1,8 @@
 import { AppSettings, parseResolution } from "@promo/shared";
+import type { ChildProcessByStdio } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { createLowerThirdBar } from "../color.js";
 import {
   buildEncoderPlan,
@@ -15,13 +17,18 @@ import {
   probeAudioStreams,
   probeDurationSeconds,
 } from "../ffmpeg/probe.js";
-import { runFfmpeg } from "../ffmpeg/run.js";
+import { runFfmpeg, spawnFfmpegPiped } from "../ffmpeg/run.js";
 import {
   formatEpisodeSubtitle,
   formatOverlayHeadline,
   VoiceCue,
 } from "../voice/templates.js";
-import { describeVoiceRequest, synthesizeVoiceOver } from "../voice/tts.js";
+import {
+  describeVoiceRequest,
+  peekCachedVoiceOver,
+  synthesizeVoiceOver,
+  voiceCacheKey,
+} from "../voice/tts.js";
 import {
   barPixelWidth,
   barXExprForCount,
@@ -34,7 +41,11 @@ import {
   PromoTiming,
   TRANSITION_SECONDS,
 } from "./layout.js";
-import { PromoChapterSource, PromoRenderRequest } from "./types.js";
+import {
+  PromoChapterSource,
+  PromoRenderRequest,
+  PromoVoiceMode,
+} from "./types.js";
 
 function expandToCount(
   chapters: PromoChapterSource[],
@@ -369,34 +380,65 @@ async function mixVoiceTrack(
   return true;
 }
 
-export async function renderPromo(
+function resolveVoiceMode(req: PromoRenderRequest): PromoVoiceMode {
+  if (!req.voiceEnabled) return "off";
+  return req.voiceMode ?? "synthesize";
+}
+
+async function resolveVoicePaths(
   settings: AppSettings,
   req: PromoRenderRequest,
-): Promise<{ voiceError?: string }> {
-  const progress = req.onProgress ?? (() => undefined);
-  fs.mkdirSync(req.workDir, { recursive: true });
-
-  const timing = getPromoTiming(settings.promoItemCount);
-  const { itemCount, totalSeconds, playSeconds, preFreezeSeconds } = timing;
-  const chapters = expandToCount(req.chapters, itemCount);
-  const { width, height } = parseResolution(settings.resolution);
-  const g = panelGeom(width, height, itemCount);
-  const barH = Math.round(height * 0.28);
-
-  let voiceError: string | undefined;
+  chapters: PromoChapterSource[],
+  progress: (message: string, level?: "info" | "warn" | "error") => void,
+): Promise<{
+  voicePaths: Array<string | undefined>;
+  voiceHashes: string[];
+  voiceError?: string;
+}> {
+  const mode = resolveVoiceMode(req);
   const voicePaths: Array<string | undefined> = [];
+  const voiceHashes: string[] = [];
+  let voiceError: string | undefined;
 
-  if (req.voiceEnabled) {
-    progress(`Voice request: ${describeVoiceRequest(settings, req.language)}`);
+  if (mode === "off") {
+    return { voicePaths: chapters.map(() => undefined), voiceHashes: [] };
+  }
+
+  progress(`Voice request: ${describeVoiceRequest(settings, req.language)}`);
+
+  if (mode === "cache-only") {
+    const peeked: Array<{ hash: string; filePath: string } | undefined> = [];
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i]!;
+      const hit = peekCachedVoiceOver(settings, req.language, {
+        channelName: req.channelName,
+        title: chapter.title,
+        episodeTitle: chapter.episodeTitle,
+        seasonNumber: chapter.seasonNumber,
+        episodeNumber: chapter.episodeNumber,
+        cue: i === 0 ? "next" : "after",
+        showVoiceDetail: settings.showVoiceDetail,
+      });
+
+      peeked.push(hit ? { hash: hit.hash, filePath: hit.filePath } : undefined);
+    }
+
+    if (peeked.some((p) => !p)) {
+      progress("VO cache incomplete — encoding without voice-over", "warn");
+      return { voicePaths: chapters.map(() => undefined), voiceHashes: [] };
+    }
+
+    for (const p of peeked) {
+      voicePaths.push(p!.filePath);
+      voiceHashes.push(p!.hash);
+      progress(`Voice cache hit (${p!.hash.slice(0, 8)}…)`);
+    }
+
+    return { voicePaths, voiceHashes };
   }
 
   for (let i = 0; i < chapters.length; i++) {
     const chapter = chapters[i]!;
-    if (!req.voiceEnabled) {
-      voicePaths.push(undefined);
-      continue;
-    }
-
     progress(`Synthesizing voice for item ${i + 1}: ${chapter.title}`);
     const voice = await synthesizeVoiceOver(
       settings,
@@ -423,11 +465,65 @@ export async function renderPromo(
     }
 
     voicePaths.push(voice.filePath);
+    if (voice.filePath) {
+      voiceHashes.push(
+        voiceCacheKey(settings, req.language, {
+          channelName: req.channelName,
+          title: chapter.title,
+          episodeTitle: chapter.episodeTitle,
+          seasonNumber: chapter.seasonNumber,
+          episodeNumber: chapter.episodeNumber,
+          cue: i === 0 ? "next" : "after",
+          showVoiceDetail: settings.showVoiceDetail,
+        }).hash,
+      );
+    }
   }
+
+  return { voicePaths, voiceHashes, voiceError };
+}
+
+interface PreparedPromoEncode {
+  timing: PromoTiming;
+  chapters: PromoChapterSource[];
+  width: number;
+  height: number;
+  barH: number;
+  barPath: string;
+  voiceMixPath: string;
+  hasVoice: boolean;
+  voiceHashes: string[];
+  voiceError?: string;
+  sourceAudibleWindows: Array<{ start: number; end: number }>;
+  windows: number[];
+  totalSeconds: number;
+  itemCount: number;
+}
+
+async function preparePromoEncode(
+  settings: AppSettings,
+  req: PromoRenderRequest,
+): Promise<PreparedPromoEncode> {
+  const progress = req.onProgress ?? (() => undefined);
+  fs.mkdirSync(req.workDir, { recursive: true });
+
+  const timing = getPromoTiming(settings.promoItemCount);
+  const { itemCount, totalSeconds, playSeconds, preFreezeSeconds } = timing;
+  const chapters = expandToCount(req.chapters, itemCount);
+  const { width, height } = parseResolution(settings.resolution);
+  const g = panelGeom(width, height, itemCount);
+  const barH = Math.round(height * 0.28);
+
+  const { voicePaths, voiceHashes, voiceError } = await resolveVoicePaths(
+    settings,
+    req,
+    chapters,
+    progress,
+  );
 
   const voiceMixPath = path.join(req.workDir, "voice-timeline.wav");
   let hasVoice = false;
-  if (req.voiceEnabled) {
+  if (voicePaths.some(Boolean)) {
     progress("Mixing voice-over timeline");
     hasVoice = await mixVoiceTrack(
       voicePaths,
@@ -542,102 +638,6 @@ export async function renderPromo(
     );
   }
 
-  const tempOut = path.join(req.workDir, "next-items.tmp.mp4");
-
-  const encodeWith = async (encodeSettings: AppSettings) => {
-    const plan = buildEncoderPlan(encodeSettings);
-    const args: string[] = [...globalHwArgs(encodeSettings)];
-
-    for (let i = 0; i < itemCount; i++) {
-      const chapter = chapters[i]!;
-      const play = playSeconds[i]!;
-      args.push(
-        ...plan.inputArgs,
-        "-ss",
-        windows[i]!.toFixed(3),
-        "-t",
-        play.toFixed(3),
-        "-i",
-        chapter.filePath,
-      );
-    }
-
-    let nextInput = itemCount;
-    let voiceInput = -1;
-    if (hasVoice) {
-      args.push("-i", voiceMixPath);
-      voiceInput = nextInput;
-      nextInput += 1;
-    }
-
-    args.push(
-      "-f",
-      "lavfi",
-      "-t",
-      String(totalSeconds),
-      "-i",
-      "anullsrc=channel_layout=stereo:sample_rate=48000",
-    );
-
-    const silenceInput = nextInput;
-    nextInput += 1;
-
-    args.push("-loop", "1", "-t", String(totalSeconds), "-i", barPath);
-    const barInput = nextInput;
-    nextInput += 1;
-
-    let logoInput: number | undefined;
-    if (req.logoPath && fs.existsSync(req.logoPath)) {
-      args.push("-loop", "1", "-t", String(totalSeconds), "-i", req.logoPath);
-      logoInput = nextInput;
-      nextInput += 1;
-    }
-
-    const script = buildFilterScript(encodeSettings, req, chapters, timing, {
-      width,
-      height,
-      barPath,
-      barH,
-      hasVoice,
-      voiceInput,
-      silenceInput,
-      barInput,
-      logoInput,
-      sourceAudibleWindows,
-    });
-
-    fs.writeFileSync(
-      path.join(req.workDir, "filter_complex.txt"),
-      script,
-      "utf8",
-    );
-
-    args.push(
-      "-filter_complex",
-      script,
-      "-map",
-      "[vout]",
-      "-map",
-      "[aout]",
-      ...plan.outputVideoArgs,
-      "-c:a",
-      "aac",
-      "-b:a",
-      `${settings.audioBitrate}k`,
-      "-ac",
-      "2",
-      "-ar",
-      "48000",
-      "-t",
-      String(totalSeconds),
-      "-movflags",
-      "+faststart",
-      tempOut,
-    );
-
-    return runFfmpeg(args);
-  };
-
   if (sourceVolPct > 0) {
     progress(
       holdAfterVoice
@@ -648,12 +648,199 @@ export async function renderPromo(
     progress("Skipping original item audio (volume 0)");
   }
 
+  return {
+    timing,
+    chapters,
+    width,
+    height,
+    barH,
+    barPath,
+    voiceMixPath,
+    hasVoice,
+    voiceHashes,
+    voiceError,
+    sourceAudibleWindows,
+    windows,
+    totalSeconds,
+    itemCount,
+  };
+}
+
+export type LivePromoContainer = "mpegts" | "fmp4";
+
+function buildPromoFfmpegArgs(
+  settings: AppSettings,
+  req: PromoRenderRequest,
+  prepared: PreparedPromoEncode,
+  output:
+    | { kind: "file"; path: string }
+    | { kind: "mpegts-pipe" }
+    | { kind: "fmp4-pipe" },
+): string[] {
+  const {
+    timing,
+    chapters,
+    width,
+    height,
+    barH,
+    barPath,
+    voiceMixPath,
+    hasVoice,
+    sourceAudibleWindows,
+    windows,
+    totalSeconds,
+    itemCount,
+  } = prepared;
+
+  const { playSeconds } = timing;
+  const plan = buildEncoderPlan(settings);
+  const args: string[] = [...globalHwArgs(settings)];
+
+  for (let i = 0; i < itemCount; i++) {
+    const chapter = chapters[i]!;
+    const play = playSeconds[i]!;
+    args.push(
+      ...plan.inputArgs,
+      "-ss",
+      windows[i]!.toFixed(3),
+      "-t",
+      play.toFixed(3),
+      "-i",
+      chapter.filePath,
+    );
+  }
+
+  let nextInput = itemCount;
+  let voiceInput = -1;
+  if (hasVoice) {
+    args.push("-i", voiceMixPath);
+    voiceInput = nextInput;
+    nextInput += 1;
+  }
+
+  args.push(
+    "-f",
+    "lavfi",
+    "-t",
+    String(totalSeconds),
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=48000",
+  );
+
+  const silenceInput = nextInput;
+  nextInput += 1;
+
+  args.push("-loop", "1", "-t", String(totalSeconds), "-i", barPath);
+  const barInput = nextInput;
+  nextInput += 1;
+
+  let logoInput: number | undefined;
+  if (req.logoPath && fs.existsSync(req.logoPath)) {
+    args.push("-loop", "1", "-t", String(totalSeconds), "-i", req.logoPath);
+    logoInput = nextInput;
+    nextInput += 1;
+  }
+
+  const script = buildFilterScript(settings, req, chapters, timing, {
+    width,
+    height,
+    barPath,
+    barH,
+    hasVoice,
+    voiceInput,
+    silenceInput,
+    barInput,
+    logoInput,
+    sourceAudibleWindows,
+  });
+
+  fs.writeFileSync(
+    path.join(req.workDir, "filter_complex.txt"),
+    script,
+    "utf8",
+  );
+
+  args.push(
+    "-filter_complex",
+    script,
+    "-map",
+    "[vout]",
+    "-map",
+    "[aout]",
+    ...plan.outputVideoArgs,
+    "-c:a",
+    "aac",
+    "-b:a",
+    `${settings.audioBitrate}k`,
+    "-ac",
+    "2",
+    "-ar",
+    "48000",
+    "-t",
+    String(totalSeconds),
+  );
+
+  if (output.kind === "mpegts-pipe") {
+    args.push(
+      "-f",
+      "mpegts",
+      "-muxdelay",
+      "0",
+      "-muxpreload",
+      "0",
+      "-flush_packets",
+      "1",
+      "pipe:1",
+    );
+  } else if (output.kind === "fmp4-pipe") {
+    // Fragmented MP4 for HTML5 <video> preview (browsers cannot play MPEG-TS).
+    args.push(
+      "-f",
+      "mp4",
+      "-movflags",
+      "frag_keyframe+empty_moov+default_base_moof",
+      "-flush_packets",
+      "1",
+      "-tag:v",
+      "avc1",
+      "pipe:1",
+    );
+  } else {
+    args.push("-movflags", "+faststart", output.path);
+  }
+
+  return args;
+}
+
+export async function renderPromo(
+  settings: AppSettings,
+  req: PromoRenderRequest,
+): Promise<{ voiceError?: string }> {
+  const progress = req.onProgress ?? (() => undefined);
+  if (!req.outputFile) {
+    throw new Error("renderPromo requires outputFile");
+  }
+
+  const prepared = await preparePromoEncode(settings, req);
+  const tempOut = path.join(req.workDir, "next-items.tmp.mp4");
   const layoutLabel =
-    itemCount === 1 ? "single" : itemCount === 2 ? "dual" : "triptych";
+    prepared.itemCount === 1
+      ? "single"
+      : prepared.itemCount === 2
+        ? "dual"
+        : "triptych";
 
   progress(
-    `Encoding ${layoutLabel} promo (${itemCount} item(s), ${totalSeconds}s, ${settings.hardwareAcceleration})`,
+    `Encoding ${layoutLabel} promo (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, ${settings.hardwareAcceleration})`,
   );
+
+  const encodeWith = (encodeSettings: AppSettings) =>
+    runFfmpeg(
+      buildPromoFfmpegArgs(encodeSettings, req, prepared, {
+        kind: "file",
+        path: tempOut,
+      }),
+    );
 
   let result = await encodeWith(settings);
   if (
@@ -682,8 +869,61 @@ export async function renderPromo(
   }
 
   fs.mkdirSync(path.dirname(req.outputFile), { recursive: true });
-  fs.copyFileSync(tempOut, req.outputFile);
+  const finalPath = `${req.outputFile}.tmp-${process.pid}`;
+  fs.copyFileSync(tempOut, finalPath);
+  fs.renameSync(finalPath, req.outputFile);
   fs.rmSync(tempOut, { force: true });
   progress("Promo file written");
-  return { voiceError };
+  return { voiceError: prepared.voiceError };
+}
+
+/** Live encode to stdout: VO cache-only (skip if cold). Returns spawned ffmpeg. */
+export async function startLivePromoEncode(
+  settings: AppSettings,
+  req: PromoRenderRequest,
+  container: LivePromoContainer = "mpegts",
+): Promise<{
+  process: ChildProcessByStdio<null, Readable, Readable>;
+  voiceHashes: string[];
+  totalSeconds: number;
+  workDir: string;
+  container: LivePromoContainer;
+}> {
+  const progress = req.onProgress ?? (() => undefined);
+  const prepared = await preparePromoEncode(settings, {
+    ...req,
+    voiceMode: req.voiceMode ?? "cache-only",
+  });
+
+  const layoutLabel =
+    prepared.itemCount === 1
+      ? "single"
+      : prepared.itemCount === 2
+        ? "dual"
+        : "triptych";
+
+  const pipeKind = container === "fmp4" ? "fmp4-pipe" : "mpegts-pipe";
+  // Browser <video> is picky about HW bitstreams — preview uses software H264.
+  const encodeSettings =
+    container === "fmp4"
+      ? { ...settings, hardwareAcceleration: "None" as const }
+      : settings;
+
+  progress(
+    `Live ${layoutLabel} ${container} (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
+  );
+
+  const args = buildPromoFfmpegArgs(encodeSettings, req, prepared, {
+    kind: pipeKind,
+  });
+
+  const child = spawnFfmpegPiped(args);
+
+  return {
+    process: child,
+    voiceHashes: prepared.voiceHashes,
+    totalSeconds: prepared.totalSeconds,
+    workDir: req.workDir,
+    container,
+  };
 }

@@ -24,7 +24,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   getSettings: () => request<AppSettings>("/api/settings"),
   getSettingsStatus: () =>
-    request<{ configured: boolean }>("/api/settings/status"),
+    request<{ configured: boolean; voiceEnabled?: boolean }>(
+      "/api/settings/status",
+    ),
   saveSettings: (settings: AppSettings) =>
     request<AppSettings>("/api/settings", {
       method: "PUT",
@@ -43,16 +45,19 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
-  generateAll: () =>
-    request<{ jobs: JobInfo[] }>("/api/generate", {
+  voPrewarmAll: () =>
+    request<{ jobs: JobInfo[] }>("/api/vo-prewarm", {
       method: "POST",
       body: "{}",
     }),
-  generateOne: (number: string) =>
-    request<{ job: JobInfo }>(`/api/generate/${encodeURIComponent(number)}`, {
-      method: "POST",
-      body: "{}",
-    }),
+  voPrewarmOne: (number: string) =>
+    request<{ job: JobInfo }>(
+      `/api/vo-prewarm/${encodeURIComponent(number)}`,
+      {
+        method: "POST",
+        body: "{}",
+      },
+    ),
   getJobs: () => request<JobInfo[]>("/api/jobs"),
   /** Live job updates via SSE. Returns an unsubscribe function. */
   subscribeJobs: (

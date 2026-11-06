@@ -44,6 +44,10 @@ import {
 } from "../util/paths.js";
 import { formatStartsAtLabel } from "../voice/templates.js";
 
+function livePreviewPath(channelNumber: string): string {
+  return `/live/${encodeURIComponent(channelNumber)}/preview.mp4`;
+}
+
 const log = createLogger("channels");
 
 export function channelLogoProxyUrl(channelNumber: string): string {
@@ -307,6 +311,7 @@ export async function loadChannelViews(
         promoUrl: fileExists(out)
           ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4`
           : undefined,
+        livePromoUrl: livePreviewPath(ch.number),
         lastError: err instanceof Error ? err.message : String(err),
       });
     }
@@ -429,6 +434,7 @@ export async function loadChannelViews(
         promoUrl: fileExists(out)
           ? `/media/${encodeURIComponent(sanitizeChannelFolderName(ch.name))}/next-items.mp4`
           : undefined,
+        livePromoUrl: livePreviewPath(ch.number),
       });
     }
 
@@ -459,6 +465,79 @@ export type ChapterProgress = (
   message: string,
   level?: "info" | "warn" | "error",
 ) => void;
+
+export interface UpcomingPromoMetaItem {
+  mediaItemId: number;
+  start: string;
+  finish: string;
+  title: string;
+  episodeTitle?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  startLabel: string;
+}
+
+/**
+ * Upcoming primary items for VO warm / fingerprint — no media file resolve.
+ * Fetches enough rows for current window + look-ahead (+1).
+ */
+export async function listUpcomingPromoMeta(
+  settings: AppSettings,
+  channelNumber: string,
+): Promise<{
+  channelName: string;
+  language: string;
+  currentKey?: string;
+  items: UpcomingPromoMetaItem[];
+}> {
+  const { m3u, guide, languageByNumber } = await loadGuide(settings);
+  const channelMeta = m3u.find((c) => c.number === channelNumber);
+  if (!channelMeta) throw new Error(`Channel ${channelNumber} not found`);
+
+  const overrides = loadChannelOverrides();
+  const override = overrides[channelNumber] ?? { enabled: true };
+  if (override.enabled === false) {
+    throw new Error(`Channel ${channelNumber} is disabled`);
+  }
+
+  const language =
+    override.language || languageByNumber.get(channelNumber) || "en";
+
+  const db = openDb(settings.etvDatabase, true);
+  try {
+    const now = new Date();
+    const current = getCurrentPrimaryItem(db, channelNumber, toUtcSqlite(now));
+    const afterIso = current ? current.finish : toUtcSqlite(now);
+    const need = (settings.promoItemCount ?? 3) + 1;
+    const nextRows = getPrimaryItemsAfter(db, channelNumber, afterIso, need);
+    const items = nextRows.map((row) => {
+      const start = fromSqliteUtc(row.start);
+      const prog = matchProgramme(guide.programmes, channelMeta.tvgId, start);
+      const labels = resolveItemLabels(db, row, prog);
+      return {
+        mediaItemId: row.mediaItemId,
+        start: row.start,
+        finish: row.finish,
+        title: labels.title,
+        episodeTitle: labels.episodeTitle,
+        seasonNumber: labels.seasonNumber,
+        episodeNumber: labels.episodeNumber,
+        startLabel: formatStartsAtLabel(language, start, settings.timeZone),
+      };
+    });
+
+    return {
+      channelName: channelMeta.name,
+      language,
+      currentKey: current
+        ? `${current.mediaItemId}@${current.start}`
+        : undefined,
+      items,
+    };
+  } finally {
+    db.close();
+  }
+}
 
 export async function buildPromoChaptersForChannel(
   settings: AppSettings,

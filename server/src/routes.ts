@@ -30,6 +30,7 @@ import {
   listErsatzTvBackups,
 } from "./services/etv-backup.js";
 import { JobQueue } from "./services/jobs.js";
+import { attachLivePromoStream } from "./services/livePromo.js";
 import { validateSettings } from "./services/validate-settings.js";
 import { createLogger } from "./util/log.js";
 import {
@@ -72,7 +73,10 @@ export function createRouter(opts: {
 
   router.get("/settings/status", (_req, res) => {
     const settings = opts.getSettings();
-    res.json({ configured: isAppConfigured(settings) });
+    res.json({
+      configured: isAppConfigured(settings),
+      voiceEnabled: Boolean(settings.voiceEnabled),
+    });
   });
 
   router.put("/settings", (req, res) => {
@@ -227,32 +231,37 @@ export function createRouter(opts: {
     res.json(loadChannelOverrides());
   });
 
-  router.post("/generate", async (req, res) => {
+  /** Manual VO prewarm (live video encodes on demand; MP4 generate removed from UI). */
+  router.post("/vo-prewarm", async (req, res) => {
     try {
       const settings = opts.getSettings();
+      if (!settings.voiceEnabled) {
+        res.status(400).json({ error: "Voice-over is disabled in Settings" });
+        return;
+      }
+
       const channels = await loadChannelViews(settings);
       const numbers: string[] | undefined = req.body?.channelNumbers;
       const selected = numbers?.length
         ? channels.filter((c) => numbers.includes(c.number))
         : channels.filter((c) => c.enabled);
 
-      log.info("enqueue generate", {
+      log.info("enqueue vo-prewarm", {
         count: selected.length,
         numbers: selected.map((c) => c.number),
       });
 
       const jobs = selected.map((c) =>
-        opts.jobs.enqueue({
+        opts.jobs.enqueueVoPrewarm({
           channelNumber: c.number,
           channelName: c.name,
-          preferFront: true,
         }),
       );
 
       res.json({ jobs });
     } catch (err) {
       log.error(
-        "POST /generate failed",
+        "POST /vo-prewarm failed",
         err instanceof Error ? err.message : String(err),
       );
 
@@ -262,9 +271,14 @@ export function createRouter(opts: {
     }
   });
 
-  router.post("/generate/:number", async (req, res) => {
+  router.post("/vo-prewarm/:number", async (req, res) => {
     try {
       const settings = opts.getSettings();
+      if (!settings.voiceEnabled) {
+        res.status(400).json({ error: "Voice-over is disabled in Settings" });
+        return;
+      }
+
       const channels = await loadChannelViews(settings);
       const channel = channels.find((c) => c.number === req.params.number);
       if (!channel) {
@@ -272,21 +286,20 @@ export function createRouter(opts: {
         return;
       }
 
-      log.info("enqueue generate one", {
+      log.info("enqueue vo-prewarm one", {
         number: channel.number,
         name: channel.name,
       });
 
-      const job = opts.jobs.enqueue({
+      const job = opts.jobs.enqueueVoPrewarm({
         channelNumber: channel.number,
         channelName: channel.name,
-        preferFront: true,
       });
 
       res.json({ job });
     } catch (err) {
       log.error(
-        "POST /generate/:number failed",
+        "POST /vo-prewarm/:number failed",
         err instanceof Error ? err.message : String(err),
       );
 
@@ -295,6 +308,7 @@ export function createRouter(opts: {
         .json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
 
   router.get("/jobs", (_req, res) => {
     res.json(opts.jobs.list());
@@ -461,6 +475,46 @@ export function createMediaRouter(getSettings: () => AppSettings): Router {
     }
 
     res.sendFile(resolved);
+  });
+
+  return router;
+}
+
+/** Live streams: MPEG-TS for ETV, fragmented MP4 for browser preview. */
+export function createLiveRouter(getSettings: () => AppSettings): Router {
+  const router = Router();
+
+  async function handleLive(
+    channelNumber: string,
+    res: import("express").Response,
+    container: "mpegts" | "fmp4",
+  ): Promise<void> {
+    const settings = getSettings();
+    log.info("live promo open", { channelNumber, container });
+
+    try {
+      await attachLivePromoStream(settings, channelNumber, res, container);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("live promo failed", { channelNumber, container, message });
+      if (!res.headersSent) {
+        res.status(503).type("text/plain").send(message);
+      } else {
+        try {
+          res.end();
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  router.get("/:channelNumber/promo.ts", async (req, res) => {
+    await handleLive(decodeURIComponent(req.params.channelNumber), res, "mpegts");
+  });
+
+  router.get("/:channelNumber/preview.mp4", async (req, res) => {
+    await handleLive(decodeURIComponent(req.params.channelNumber), res, "fmp4");
   });
 
   return router;

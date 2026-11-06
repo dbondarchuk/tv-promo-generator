@@ -11,12 +11,19 @@ import path from "node:path";
 import { renderPromo } from "../promo/render.js";
 import { createLogger } from "../util/log.js";
 import { promoOutputFile } from "../util/paths.js";
+import { synthesizeVoiceOver, voiceCacheKey } from "../voice/tts.js";
+import { recordVoiceGeneration } from "../voice/ledger.js";
 import {
   buildPromoChaptersForChannel,
   getFontFile,
   invalidateChannelCaches,
+  listUpcomingPromoMeta,
 } from "./channels.js";
 import { rollbackErsatzTvDatabase } from "./etv-backup.js";
+import {
+  promoWindowFingerprint,
+  promoWindowsFromPrimaries,
+} from "./fingerprint.js";
 import { pushToErsatzTv } from "./push.js";
 
 const log = createLogger("jobs");
@@ -73,6 +80,15 @@ export class JobQueue {
     return [...this.jobs.values()].some(
       (j) =>
         j.kind === "generate" &&
+        j.channelNumber === channelNumber &&
+        isPendingStatus(j.status),
+    );
+  }
+
+  hasPendingVoPrewarm(channelNumber: string): boolean {
+    return [...this.jobs.values()].some(
+      (j) =>
+        j.kind === "vo-prewarm" &&
         j.channelNumber === channelNumber &&
         isPendingStatus(j.status),
     );
@@ -174,6 +190,57 @@ export class JobQueue {
     return this.publicJob(job);
   }
 
+  enqueueVoPrewarm(opts: {
+    channelNumber: string;
+    channelName: string;
+  }): JobInfo {
+    const existingQueued = [...this.jobs.values()].find(
+      (j) =>
+        j.kind === "vo-prewarm" &&
+        j.channelNumber === opts.channelNumber &&
+        isPendingStatus(j.status),
+    );
+
+    if (existingQueued) {
+      this.appendLog(
+        existingQueued.id,
+        "info",
+        "VO prewarm requested again while still queued/running",
+      );
+
+      return this.publicJob(existingQueued);
+    }
+
+    const id = `vo-${opts.channelNumber}-${Date.now()}`;
+    const job: InternalJob = {
+      id,
+      kind: "vo-prewarm",
+      channelNumber: opts.channelNumber,
+      channelName: opts.channelName,
+      status: "queued",
+      queuedAt: new Date().toISOString(),
+      logs: [],
+      priority: 5,
+    };
+
+    this.jobs.set(id, job);
+    this.queue.push(id);
+    this.queue.sort(
+      (a, b) => this.jobs.get(a)!.priority - this.jobs.get(b)!.priority,
+    );
+
+    this.appendLog(id, "info", `Queued VO prewarm · position ${this.queue.length}`, false);
+    log.info("vo-prewarm queued", {
+      id,
+      channel: opts.channelName,
+      number: opts.channelNumber,
+    });
+
+    this.emit();
+    void this.pump();
+    return this.publicJob(job);
+  }
+
   enqueuePush(pushOptions: PushOptions): JobInfo {
     return this.enqueueBlocking({
       kind: "push",
@@ -262,7 +329,7 @@ export class JobQueue {
 
     for (const other of this.jobs.values()) {
       if (
-        other.kind === "generate" &&
+        (other.kind === "generate" || other.kind === "vo-prewarm") &&
         (other.status === "queued" || other.status === "late")
       ) {
         this.appendLog(other.id, "warn", opts.pauseMessage, false);
@@ -271,7 +338,9 @@ export class JobQueue {
 
     if (
       [...this.jobs.values()].some(
-        (j) => j.kind === "generate" && j.status === "running",
+        (j) =>
+          (j.kind === "generate" || j.kind === "vo-prewarm") &&
+          j.status === "running",
       )
     ) {
       this.appendLog(
@@ -348,7 +417,10 @@ export class JobQueue {
         continue;
       }
 
-      if (job.kind === "generate" && blocking) {
+      if (
+        (job.kind === "generate" || job.kind === "vo-prewarm") &&
+        blocking
+      ) {
         continue;
       }
 
@@ -391,6 +463,8 @@ export class JobQueue {
         await this.runPushJob(job);
       } else if (job.kind === "rollback") {
         await this.runRollbackJob(job);
+      } else if (job.kind === "vo-prewarm") {
+        await this.runVoPrewarmJob(job);
       } else {
         await this.runGenerateJob(job);
       }
@@ -408,6 +482,93 @@ export class JobQueue {
     this.running = false;
     this.emit();
     void this.pump();
+  }
+
+  private async runVoPrewarmJob(job: InternalJob): Promise<void> {
+    const settings = this.settingsProvider();
+    if (!settings.voiceEnabled) {
+      this.appendLog(job.id, "info", "Voice disabled — skipping VO prewarm");
+      job.status = "succeeded";
+      job.finishedAt = new Date().toISOString();
+      return;
+    }
+
+    const meta = await listUpcomingPromoMeta(settings, job.channelNumber);
+    const { current, lookAhead } = promoWindowsFromPrimaries(
+      meta.items,
+      settings.promoItemCount ?? 3,
+    );
+
+    const windows = [
+      { label: "current", items: current },
+      { label: "look-ahead", items: lookAhead },
+    ];
+
+    for (const window of windows) {
+      if (window.items.length === 0) continue;
+
+      const fingerprint = promoWindowFingerprint(
+        settings,
+        window.items.map((i) => ({
+          mediaItemId: i.mediaItemId,
+          start: i.start,
+        })),
+      );
+
+      this.appendLog(
+        job.id,
+        "info",
+        `Warming VO (${window.label}) · ${window.items.length} item(s) · fp ${fingerprint.slice(0, 8)}…`,
+      );
+
+      const hashes: string[] = [];
+      for (let i = 0; i < window.items.length; i++) {
+        const item = window.items[i]!;
+        const input = {
+          channelName: meta.channelName,
+          title: item.title,
+          episodeTitle: item.episodeTitle,
+          seasonNumber: item.seasonNumber,
+          episodeNumber: item.episodeNumber,
+          cue: (i === 0 ? "next" : "after") as "next" | "after",
+          showVoiceDetail: settings.showVoiceDetail,
+        };
+
+        const key = voiceCacheKey(settings, meta.language, input);
+        hashes.push(key.hash);
+        this.appendLog(
+          job.id,
+          "info",
+          `  ${i + 1}. ${item.title} → ${key.hash.slice(0, 10)}…`,
+        );
+
+        const voice = await synthesizeVoiceOver(
+          settings,
+          settings.cachePath,
+          meta.language,
+          input,
+        );
+
+        if (voice.error) {
+          this.appendLog(job.id, "warn", `  Voice: ${voice.error}`);
+        } else if (voice.cached) {
+          this.appendLog(job.id, "info", `  Cache hit (${voice.voice})`);
+        } else {
+          this.appendLog(job.id, "info", `  Synthesized (${voice.voice})`);
+        }
+      }
+
+      recordVoiceGeneration(
+        settings.cachePath,
+        job.channelNumber,
+        fingerprint,
+        hashes,
+      );
+    }
+
+    job.status = "succeeded";
+    job.finishedAt = new Date().toISOString();
+    this.appendLog(job.id, "info", "VO prewarm complete", false);
   }
 
   private async runGenerateJob(job: InternalJob): Promise<void> {

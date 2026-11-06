@@ -13,7 +13,7 @@ import path from "node:path";
 import { EtvApiClient } from "../ersatztv/api.js";
 import {
   applyScheduleItemFillers,
-  ensurePromoLibrary,
+  ensureRemoteStreamLibrary,
   FILLER_PLACEMENT_META,
   findMediaItemByFileName,
   findMediaItemByPath,
@@ -26,9 +26,12 @@ import {
   upsertManualCollection,
 } from "../ersatztv/db.js";
 import { createLogger } from "../util/log.js";
-import { fileExists, promoOutputFile } from "../util/paths.js";
 import { loadChannelViews } from "./channels.js";
 import { backupErsatzTvDatabase } from "./etv-backup.js";
+import {
+  resolveRemoteStreamsPath,
+  writeChannelRemoteStreamYaml,
+} from "./remote-stream-yml.js";
 
 const log = createLogger("push");
 
@@ -116,7 +119,7 @@ export async function pushToErsatzTv(
   const channels = (await loadChannelViews(settings)).filter((c) => c.enabled);
   progress(`Enabled channels: ${channels.length}`);
   const results: PushChannelResult[] = [];
-  const etvLibraryPath = settings.etvLibraryPath || settings.outputPath;
+  const remoteStreamsPath = resolveRemoteStreamsPath(settings);
   const api = new EtvApiClient(settings.etvUrl, settings.etvApiKey);
 
   progress("Backing up ersatztv.sqlite3");
@@ -125,13 +128,53 @@ export async function pushToErsatzTv(
 
   let libraryId: number | undefined;
   if (wireFillers) {
-    progress(`Ensuring Promo Generator library at ${etvLibraryPath}`);
+    if (!settings.etvOnDemandBaseUrl?.trim()) {
+      const message =
+        "etvOnDemandBaseUrl is required for live Remote Stream push";
+      progress(message, "error");
+      return {
+        backup,
+        results: channels.map((c) => ({
+          channelNumber: c.number,
+          channelName: c.name,
+          ok: false,
+          message,
+        })),
+      };
+    }
+
+    progress(`Writing Remote Stream YAML under ${remoteStreamsPath}`);
+    for (const channel of channels) {
+      try {
+        const written = writeChannelRemoteStreamYaml(
+          settings,
+          channel.number,
+          channel.name,
+        );
+
+        progress(`  ${channel.name} → ${written.url}`);
+      } catch (err) {
+        progress(
+          `  YAML failed for ${channel.name}: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+      }
+    }
+
+    progress(
+      `Ensuring Promo Generator Remote Streams library at ${remoteStreamsPath}`,
+    );
+
     try {
       libraryId = await withWriteDb(
         settings.etvDatabase,
         progress,
         (db) =>
-          ensurePromoLibrary(db, "Promo Generator", etvLibraryPath).libraryId,
+          ensureRemoteStreamLibrary(
+            db,
+            "Promo Generator Streams",
+            remoteStreamsPath,
+          ).libraryId,
       );
 
       progress(`Library id ${libraryId}`);
@@ -173,24 +216,10 @@ export async function pushToErsatzTv(
 
     let mediaItemId: number | undefined;
     if (wireFillers) {
-      const localPath = promoOutputFile(settings.outputPath, channel.name);
-      if (!fileExists(localPath)) {
-        const message = "Promo file missing; generate it first";
-        progress(`  ${message}`, "warn");
-        results.push({
-          channelNumber: channel.number,
-          channelName: channel.name,
-          ok: false,
-          message,
-        });
-
-        continue;
-      }
-
       const etvFilePath = path.posix.join(
-        etvLibraryPath.replace(/\\/g, "/").replace(/\/+$/, ""),
+        remoteStreamsPath.replace(/\\/g, "/").replace(/\/+$/, ""),
         sanitizeChannelFolderName(channel.name),
-        "next-items.mp4",
+        "next-items.yml",
       );
 
       progress(`  Waiting for scan: ${etvFilePath}`);
@@ -201,7 +230,7 @@ export async function pushToErsatzTv(
             findMediaItemByPath(rw, etvFilePath) ??
             findMediaItemByFileName(
               rw,
-              `${sanitizeChannelFolderName(channel.name)}/next-items.mp4`,
+              `${sanitizeChannelFolderName(channel.name)}/next-items.yml`,
             );
 
           if (byPath) {

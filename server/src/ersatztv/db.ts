@@ -1029,10 +1029,15 @@ export function applyScheduleItemFillers(
   return { notes, itemCount };
 }
 
-export function ensurePromoLibrary(
+/** LibraryMediaKind: OtherVideos = 4, RemoteStreams = 7 */
+const MEDIA_KIND_OTHER_VIDEOS = 4;
+const MEDIA_KIND_REMOTE_STREAMS = 7;
+
+function ensureLibraryOfKind(
   db: Database.Database,
   libraryName: string,
   libraryPath: string,
+  mediaKind: number,
 ): { libraryId: number } {
   const schema = loadSchema(db);
   requireTable(schema, "Library");
@@ -1061,7 +1066,7 @@ export function ensurePromoLibrary(
 
     if (libCols.has("MediaKind")) {
       insertCols.push("MediaKind");
-      insertVals.push(4); // OtherVideos
+      insertVals.push(mediaKind);
     }
 
     const placeholders = insertCols.map(() => "?").join(", ");
@@ -1078,6 +1083,33 @@ export function ensurePromoLibrary(
 
   ensureLibraryPath(db, schema, library.id, libraryPath);
   return { libraryId: library.id };
+}
+
+export function ensurePromoLibrary(
+  db: Database.Database,
+  libraryName: string,
+  libraryPath: string,
+): { libraryId: number } {
+  return ensureLibraryOfKind(
+    db,
+    libraryName,
+    libraryPath,
+    MEDIA_KIND_OTHER_VIDEOS,
+  );
+}
+
+/** Remote Stream library (MediaKind = 7) for live promo `.yml` definitions. */
+export function ensureRemoteStreamLibrary(
+  db: Database.Database,
+  libraryName: string,
+  libraryPath: string,
+): { libraryId: number } {
+  return ensureLibraryOfKind(
+    db,
+    libraryName,
+    libraryPath,
+    MEDIA_KIND_REMOTE_STREAMS,
+  );
 }
 
 function findLocalMediaSource(db: Database.Database, schema: DbSchema): number {

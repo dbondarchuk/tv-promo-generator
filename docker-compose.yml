@@ -17,9 +17,9 @@ services:
     volumes:
       # Host media library → container /library (Settings → Library path = /library)
       - ${MEDIA_PATH:-./media}:/library:ro
-      # Promo files written here; mount the same host folder into ErsatzTV
+      # Promo preview MP4 + Remote Stream YAML; mount the same host folder into ErsatzTV
       - ${PROMO_PATH:-./output}:/data/output
-      # Same files as ErsatzTV sees them (Settings → ErsatzTV library path = /promos)
+      # Same files as ErsatzTV sees them (Settings → Remote Streams path / library path = /promos)
       - ${PROMO_PATH:-./output}:/promos
       - ${CONFIG_PATH:-./config}:/data/config
       - ${CACHE_PATH:-./cache}:/data/cache

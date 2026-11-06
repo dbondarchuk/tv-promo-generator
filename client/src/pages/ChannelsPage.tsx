@@ -12,6 +12,7 @@ import {
 } from "@promo/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { LivePromoPreview } from "../components/LivePromoPreview";
 import { api } from "../api";
 
 const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
@@ -56,6 +57,7 @@ export function ChannelsPage() {
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [streamStatus, setStreamStatus] = useState<
     "connecting" | "live" | "reconnecting"
   >("connecting");
@@ -96,17 +98,17 @@ export function ChannelsPage() {
     [jobs],
   );
 
-  /** Per-channel generate job badge: generating wins over in queue. */
-  const generateJobBadgeByChannel = useMemo(() => {
-    const map = new Map<string, "generating" | "queued">();
+  /** Per-channel VO-prewarm job badge: running wins over queued. */
+  const voJobBadgeByChannel = useMemo(() => {
+    const map = new Map<string, "warming" | "queued">();
     for (const job of jobs) {
-      if ((job.kind ?? "generate") !== "generate") continue;
+      if (job.kind !== "vo-prewarm") continue;
 
       if (job.status === "running" || job.status === "late") {
-        map.set(job.channelNumber, "generating");
+        map.set(job.channelNumber, "warming");
       } else if (
         job.status === "queued" &&
-        map.get(job.channelNumber) !== "generating"
+        map.get(job.channelNumber) !== "warming"
       ) {
         map.set(job.channelNumber, "queued");
       }
@@ -137,7 +139,10 @@ export function ChannelsPage() {
   useEffect(() => {
     api
       .getSettingsStatus()
-      .then((status) => setConfigured(status.configured))
+      .then((status) => {
+        setConfigured(status.configured);
+        setVoiceEnabled(status.voiceEnabled !== false);
+      })
       .catch(() => setConfigured(false));
   }, []);
 
@@ -225,10 +230,10 @@ export function ChannelsPage() {
     }
   }, [jobs, expandedJobId]);
 
-  async function generateAll() {
+  async function voPrewarmAll() {
     setBusy(true);
     try {
-      await api.generateAll();
+      await api.voPrewarmAll();
       await refreshChannels();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -237,10 +242,10 @@ export function ChannelsPage() {
     }
   }
 
-  async function generateOne(number: string) {
+  async function voPrewarmOne(number: string) {
     setBusy(true);
     try {
-      await api.generateOne(number);
+      await api.voPrewarmOne(number);
       await refreshChannels();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -367,9 +372,10 @@ export function ChannelsPage() {
           >
             <h2 id="push-dialog-title">Push to ErsatzTV</h2>
             <p className="muted">
-              Backs up ersatztv.sqlite3, then wires selected fillers on classic
-              schedules for enabled channels. Generation pauses until push
-              finishes.
+              Backs up ersatztv.sqlite3, writes Remote Stream YAML (live HTTP
+              MPEG-TS), then wires selected fillers on classic schedules.
+              Requires On-demand base URL in Settings. Generation pauses until
+              push finishes.
             </p>
             <fieldset className="filler-type-fieldset">
               <legend>Filler types</legend>
@@ -458,7 +464,8 @@ export function ChannelsPage() {
           <div>
             <h1>Channels</h1>
             <p className="muted">
-              Preview next items, generate promos, and push fillers to ErsatzTV.
+              Live preview, warm voice-over ahead of fillers, and push to
+              ErsatzTV.
             </p>
           </div>
           <div className="row">
@@ -469,17 +476,19 @@ export function ChannelsPage() {
             >
               Refresh
             </button>
-            <button
-              disabled={busy || exclusiveActive}
-              title={
-                exclusiveActive
-                  ? "Paused while push/rollback is running"
-                  : undefined
-              }
-              onClick={() => void generateAll()}
-            >
-              Generate all
-            </button>
+            {voiceEnabled && (
+              <button
+                disabled={busy || exclusiveActive}
+                title={
+                  exclusiveActive
+                    ? "Paused while push/rollback is running"
+                    : "Pre-synthesize voice for enabled channels"
+                }
+                onClick={() => void voPrewarmAll()}
+              >
+                Warm VO all
+              </button>
+            )}
             <button
               className="success"
               disabled={busy || exclusiveActive}
@@ -504,8 +513,8 @@ export function ChannelsPage() {
         {error && <p className="error">{error}</p>}
         {exclusiveActive && (
           <p className="muted" style={{ marginTop: 8 }}>
-            Push/rollback job is active — generate jobs are paused. Open the
-            Jobs panel for live logs.
+            Push/rollback job is active — VO prewarm is paused. Open the Jobs
+            panel for live logs.
           </p>
         )}
         {latestPushBackup && (
@@ -526,7 +535,7 @@ export function ChannelsPage() {
             {streamStatus === "live"
               ? jobsActive
                 ? exclusiveActive
-                  ? "Live via SSE · push/rollback pausing generate"
+                  ? "Live via SSE · push/rollback pausing VO prewarm"
                   : "Live via SSE"
                 : "SSE connected · idle"
               : streamStatus === "reconnecting"
@@ -545,7 +554,9 @@ export function ChannelsPage() {
                 ? "push"
                 : kind === "rollback"
                   ? "rollback"
-                  : "gen";
+                  : kind === "vo-prewarm"
+                    ? "gen"
+                    : "gen";
 
             return (
               <div
@@ -560,7 +571,7 @@ export function ChannelsPage() {
                   <span>
                     <span className={`badge ${kindClass}`}>{kind}</span>{" "}
                     <strong>{j.channelName}</strong>
-                    {kind === "generate" && (
+                    {kind === "vo-prewarm" && (
                       <span className="muted"> #{j.channelNumber}</span>
                     )}
                   </span>
@@ -737,39 +748,46 @@ export function ChannelsPage() {
 
               <div className="flex-1" />
 
-              {ch.promoExists && ch.promoUrl && (
+              {ch.livePromoUrl && ch.enabled && ch.nextItems.length > 0 ? (
+                <LivePromoPreview
+                  src={ch.livePromoUrl}
+                  channelLabel={ch.name}
+                />
+              ) : ch.promoExists && ch.promoUrl ? (
                 <video
                   key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
                   controls
                   src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
                 />
-              )}
-              {!ch.promoExists && (
-                <div className="muted">No promo generated yet.</div>
+              ) : (
+                <div className="muted">
+                  {ch.enabled
+                    ? "No upcoming items to preview."
+                    : "Enable channel to preview live promo."}
+                </div>
               )}
               {ch.lastError && <div className="error">{ch.lastError}</div>}
 
               <div className="row">
-                <button
-                  disabled={busy || exclusiveActive || !ch.enabled}
-                  title={
-                    exclusiveActive
-                      ? "Paused while push/rollback is running"
-                      : undefined
-                  }
-                  onClick={() => void generateOne(ch.number)}
-                >
-                  Generate
-                </button>
-                {generateJobBadgeByChannel.get(ch.number) === "generating" && (
-                  <span className="badge warn">generating</span>
+                {voiceEnabled && (
+                  <button
+                    disabled={busy || exclusiveActive || !ch.enabled}
+                    title={
+                      exclusiveActive
+                        ? "Paused while push/rollback is running"
+                        : "Pre-synthesize voice for upcoming items"
+                    }
+                    onClick={() => void voPrewarmOne(ch.number)}
+                  >
+                    Warm VO
+                  </button>
                 )}
-                {generateJobBadgeByChannel.get(ch.number) === "queued" && (
-                  <span className="badge">in queue</span>
+                {voJobBadgeByChannel.get(ch.number) === "warming" && (
+                  <span className="badge warn">warming VO</span>
                 )}
-                <span className={`badge ${ch.promoExists ? "ok" : "warn"}`}>
-                  {ch.promoExists ? "promo ready" : "missing promo"}
-                </span>
+                {voJobBadgeByChannel.get(ch.number) === "queued" && (
+                  <span className="badge">VO in queue</span>
+                )}
               </div>
             </div>
           </article>

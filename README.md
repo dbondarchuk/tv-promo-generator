@@ -30,8 +30,8 @@ https://github.com/user-attachments/assets/b4490290-5439-4899-9a0a-52f66f6b4f15
 | **Graphics** | Channel logo, color lower-third, localized “Next / After that” + start time |
 | **Voice** | Piper (Wyoming) preferred; Edge TTS then Windows SAPI fallbacks |
 | **Audio** | Optional original-item bed (volume + mute-until-VO-ends) |
-| **Automation** | Regenerates when the current item is within the regen lead window |
-| **Push** | Other Video library + per-channel collections + classic-schedule fillers |
+| **Automation** | VO prewarm when a new primary starts (+ look-ahead); live MPEG-TS at play time |
+| **Push** | Remote Stream YAML + per-channel collections + classic-schedule fillers |
 
 ---
 
@@ -58,7 +58,7 @@ docker compose up -d
 ```
 
 3. Open **http://localhost:5174** → **Settings** and fill ErsatzTV + paths (see below).
-4. Open **Channels**, enable channels, **Generate**, then **Push to ErsatzTV** when ready.
+4. Open **Channels**, enable channels, optionally **Warm VO**, then **Push to ErsatzTV** when ready.
 
 If the app is not configured yet, Channels shows a setup prompt linking to Settings. `config/settings.json` is created automatically on first start.
 
@@ -108,10 +108,12 @@ If the DB already stores paths that exist as-is inside this container, leave the
 
 | Setting | Role |
 |---|---|
-| **Output path** | Where this app **writes** `{channel}/next-items.mp4` (container path, e.g. `/data/output`) |
-| **ErsatzTV library path** | Same folder as **ErsatzTV’s Other Video library** sees it (e.g. `/promos`). Used when Push registers the file in ETV. |
+| **Output path** | Where this app **writes** preview `{channel}/next-items.mp4` (container path, e.g. `/data/output`) |
+| **ErsatzTV library path** | Fallback / legacy Other Video path |
+| **On-demand base URL** | How ErsatzTV reaches this app (e.g. `http://tv-promo-generator:5174`) for live `/live/{channel}/promo.ts` |
+| **Remote Streams path** | Folder for per-channel `next-items.yml` definitions (mount into both containers; ETV Remote Streams library) |
 
-Both should refer to the same files on disk, even when the path strings differ between containers.
+Air playback is **live HTTP MPEG-TS**, not an on-disk MP4. Use **Preview live** on Channels for a browser fMP4 preview.
 
 ---
 
@@ -130,7 +132,9 @@ Stored in `config/settings.json`. Port, cache, config path, log level, and ffmpe
 | **ErsatzTV path prefix** | DB path prefix rewritten to Library path (see above); empty if no rewrite |
 | **Output path** | Directory for generated promos (e.g. `/data/output`) |
 | **ErsatzTV library path** | Promo folder as ErsatzTV sees it (e.g. `/promos`) |
-| **Regen lead time (minutes)** | Start regenerating when the current primary item ends within this many minutes |
+| **On-demand base URL** | Base URL ErsatzTV uses for live promos (must be reachable from the ETV container) |
+| **Remote Streams path** | Directory for Remote Stream YAML (empty → library / output path) |
+| **Regen lead time (minutes)** | Legacy setting (VO now warms at current-item start) |
 | **Display timezone** | IANA zone for on-screen / spoken start times (e.g. `America/New_York`). Empty → use `TIME_ZONE` / `TZ` env |
 
 ### Encoding
@@ -183,9 +187,10 @@ Use **Validate settings** to check paths, DB, ffmpeg, and API connectivity. **Re
 
 1. **Settings** — configure ErsatzTV + paths, then Validate / Save.
 2. **Channels** — list from ErsatzTV; toggle **enabled**; optional per-channel language and color.
-3. **Generate** / **Generate all** — build promos; job logs stream live.
-4. **Push to ErsatzTV** — choose filler slots (pre / middle / post / tail) and cleanup options.
-5. **Rollback DB** — restore the last pre-push SQLite backup if needed.
+3. **Preview live** — on-demand MPEG-TS/fMP4 encode of the current next-up set.
+4. **Warm VO** / **Warm VO all** — pre-synthesize voice (when voice-over is enabled); the scheduler also warms VO when a new primary starts.
+5. **Push to ErsatzTV** — choose filler slots (pre / middle / post / tail) and cleanup options.
+6. **Rollback DB** — restore the last pre-push SQLite backup if needed.
 
 Per-channel language drives overlays and VO templates (e.g. `uk` → Ukrainian).
 
@@ -201,26 +206,40 @@ Per-channel language drives overlays and VO templates (e.g. `uk` → Ukrainian).
 
 ---
 
-## Auto regeneration
+## Live promos (on-demand)
 
-A background scheduler checks enabled channels. When the current primary item ends within **Regen lead time**, it enqueues a new promo so the next block is ready before the filler is needed.
+ErsatzTV plays fillers from a **Remote Stream** that points at this app:
+
+```yml
+url: http://tv-promo-generator:5174/live/{channelNumber}/promo.ts
+is_live: true
+duration: 00:00:30
+```
+
+When ETV opens the URL, this app live-encodes the current “next up” set as **MPEG-TS** over HTTP. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
+
+### VO prewarm + cache
+
+- Scheduler detects a **new current primary** and enqueues a **vo-prewarm** job for the next-N window and a +1 look-ahead.
+- WAV files live under `{cache}/voice/` with a per-channel ledger; only the last few currents are kept (older hashes are deleted).
 
 ---
 
 ## Push to ErsatzTV
 
-**Push** runs as a job (pauses generate):
+**Push** runs as a job (pauses generate / VO prewarm):
 
-1. Creates/updates Other Video library **Promo Generator** (folder = ErsatzTV library path)
-2. Scans the library
-3. Upserts manual collection `Promo Generator - Next - {channel name}` with that channel’s promo
-4. Upserts typed filler presets and wires selected schedule slots (pre / middle / post / tail)
-5. Optionally cleans legacy / unselected fillers
-6. Resets the channel playout
+1. Writes per-channel `next-items.yml` under the Remote Streams path (URL = on-demand base + `/live/...`)
+2. Creates/updates Remote Stream library **Promo Generator Streams**
+3. Scans the library
+4. Upserts manual collection `Promo Generator - Next - {channel name}` with that channel’s `.yml` media item
+5. Upserts typed filler presets and wires selected schedule slots (pre / middle / post / tail)
+6. Optionally cleans legacy / unselected fillers
+7. Resets the channel playout
 
-Skipped when the playout is not classic, or the schedule is shared by multiple channels.
+Requires **On-demand base URL**. Skipped when the playout is not classic, or the schedule is shared by multiple channels.
 
-> Push writes to `ersatztv.sqlite3` and resets playouts — confirm before running in production.
+> Push writes to `ersatztv.sqlite3` and resets playouts — confirm before running in production. Requires ErsatzTV with Remote Streams support.
 
 ---
 
@@ -289,7 +308,8 @@ npm run format       # Prettier write
 | Setup required on Channels | Fill ErsatzTV URL, database, library path, and output path in Settings |
 | `File not found` while generating | Check Library path + path prefix rewrite against DB paths |
 | VO hangs / Edge 403 | Set a reachable Piper URL; Edge is optional |
-| Push skipped | Classic playout only; shared schedules across channels are skipped |
+| Push skipped | Classic playout only; shared schedules across channels are skipped; set On-demand base URL |
+| Live stream 503 | Channel disabled / no upcoming items / media paths unreadable |
 | Empty / wrong titles | DB / XMLTV metadata; confirm database path is readable |
 
 Job logs on Channels show each encode step. Failed encodes leave `filter_complex.txt` under the job work dir in cache.

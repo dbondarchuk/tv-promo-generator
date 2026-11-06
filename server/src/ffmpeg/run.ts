@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { ChildProcessByStdio, spawn } from "node:child_process";
+import type { Readable } from "node:stream";
 import { resolveFfmpegBinaries } from "./binaries.js";
 
 export interface FfmpegRunResult {
@@ -22,5 +23,16 @@ export function runFfmpeg(args: string[]): Promise<FfmpegRunResult> {
     child.on("close", (code) => {
       resolve({ code: code ?? 1, stderr });
     });
+  });
+}
+
+/** Spawn ffmpeg with stdout piped (for live MPEG-TS). Caller owns the process. */
+export function spawnFfmpegPiped(
+  args: string[],
+): ChildProcessByStdio<null, Readable, Readable> {
+  const { ffmpeg } = resolveFfmpegBinaries();
+  return spawn(ffmpeg, ["-hide_banner", "-y", ...args], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"] as const,
   });
 }

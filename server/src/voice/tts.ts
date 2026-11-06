@@ -608,12 +608,12 @@ function wantsSapi(provider: VoiceProvider): boolean {
   return provider === "auto" || provider === "sapi";
 }
 
-export async function synthesizeVoiceOver(
+/** Content-addressed key for a voice line (matches synthesizeVoiceOver). */
+export function voiceCacheKey(
   settings: AppSettings,
-  cacheDir: string,
   language: string,
   input: VoiceLineInput,
-): Promise<VoiceResult> {
+): { hash: string; text: string; outWav: string; partsDir: string } {
   const runtime = voiceRuntimeFromSettings(settings);
   const built = buildVoiceLine(language, input);
   const engineHint =
@@ -639,10 +639,63 @@ export async function synthesizeVoiceOver(
     )
     .digest("hex");
 
+  const outDir = path.join(settings.cachePath, "voice");
+  return {
+    hash,
+    text: built.text,
+    outWav: path.join(outDir, `${hash}.wav`),
+    partsDir: path.join(outDir, `${hash}.parts`),
+  };
+}
+
+/**
+ * Return cached WAV if present — never synthesizes.
+ * Used by live encode (skip VO when cold) and ledger bookkeeping.
+ */
+export function peekCachedVoiceOver(
+  settings: AppSettings,
+  language: string,
+  input: VoiceLineInput,
+): { hash: string; filePath: string; text: string } | undefined {
+  const key = voiceCacheKey(settings, language, input);
+  if (fs.existsSync(key.outWav) && fs.statSync(key.outWav).size > 0) {
+    return { hash: key.hash, filePath: key.outWav, text: key.text };
+  }
+
+  return undefined;
+}
+
+export function voiceCacheDir(cachePath: string): string {
+  return path.join(cachePath, "voice");
+}
+
+export async function synthesizeVoiceOver(
+  settings: AppSettings,
+  cacheDir: string,
+  language: string,
+  input: VoiceLineInput,
+): Promise<VoiceResult> {
+  const runtime = voiceRuntimeFromSettings(settings);
+  const built = buildVoiceLine(language, input);
+  const engineHint =
+    runtime.piperUrl && wantsPiper(runtime.provider)
+      ? "piper"
+      : runtime.provider;
+
+  const piperVoiceHint = preferredPiperVoice(runtime, built.language) ?? "";
+  const piperSpeakerHint = preferredPiperSpeaker(runtime, built.language) ?? "";
+  // Prefer explicit cacheDir (jobs pass settings.cachePath); keep signature stable.
+  const key = voiceCacheKey(
+    { ...settings, cachePath: cacheDir },
+    language,
+    input,
+  );
+
+  const hash = key.hash;
   const outDir = path.join(cacheDir, "voice");
   fs.mkdirSync(outDir, { recursive: true });
-  const outWav = path.join(outDir, `${hash}.wav`);
-  const workDir = path.join(outDir, `${hash}.parts`);
+  const outWav = key.outWav;
+  const workDir = key.partsDir;
 
   if (fs.existsSync(outWav) && fs.statSync(outWav).size > 0) {
     const cachedVoice =

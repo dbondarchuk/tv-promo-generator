@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { loadSettings } from "./config.js";
 import { loadEnv } from "./env.js";
 import { assertFfmpegAvailable } from "./ffmpeg/binaries.js";
-import { createMediaRouter, createRouter } from "./routes.js";
+import {
+  createLiveRouter,
+  createMediaRouter,
+  createRouter,
+} from "./routes.js";
 import { JobQueue } from "./services/jobs.js";
 import { RegenScheduler } from "./services/scheduler.js";
 import { createLogger } from "./util/log.js";
@@ -53,12 +57,22 @@ app.use(
   createMediaRouter(() => settings),
 );
 
+app.use(
+  "/live",
+  createLiveRouter(() => settings),
+);
+
 const clientDist = path.resolve(__dirname, "../../client/dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
   app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api") || req.path.startsWith("/media"))
+    if (
+      req.path.startsWith("/api") ||
+      req.path.startsWith("/media") ||
+      req.path.startsWith("/live")
+    ) {
       return next();
+    }
 
     res.sendFile(path.join(clientDist, "index.html"));
   });

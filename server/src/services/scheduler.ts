@@ -2,22 +2,27 @@ import { AppSettings } from "@promo/shared";
 import { loadChannelOverrides } from "../config.js";
 import {
   getCurrentPrimaryItem,
-  getUpcomingPlayoutItems,
   listChannelNumbers,
   openDb,
 } from "../ersatztv/db.js";
-import { fromSqliteUtc, toUtcSqlite } from "../ersatztv/time.js";
+import { toUtcSqlite } from "../ersatztv/time.js";
 import { createLogger } from "../util/log.js";
-import { fileExists, promoOutputFile } from "../util/paths.js";
 import { JobQueue } from "./jobs.js";
 
 const log = createLogger("scheduler");
 
+/**
+ * On each new current primary, enqueue VO prewarm for that channel
+ * (current next-N window + look-ahead). Does not bake MP4 for air —
+ * live MPEG-TS handles playback.
+ */
 export class RegenScheduler {
   private timer?: NodeJS.Timeout;
   private settingsProvider: () => AppSettings;
   private jobs: JobQueue;
   private running = false;
+  /** Last seen current primary key per channel (`mediaItemId@start`). */
+  private lastCurrentKey = new Map<string, string>();
 
   constructor(settingsProvider: () => AppSettings, jobs: JobQueue) {
     this.settingsProvider = settingsProvider;
@@ -46,6 +51,10 @@ export class RegenScheduler {
     try {
       const settings = this.settingsProvider();
       if (!settings.etvDatabase) return;
+      if (!settings.voiceEnabled) {
+        log.debug("scheduler skip (voice disabled)");
+        return;
+      }
 
       let db;
       try {
@@ -61,40 +70,12 @@ export class RegenScheduler {
 
       try {
         const now = new Date();
-        const leadMs = settings.regenLeadMinutes * 60_000;
         const overrides = loadChannelOverrides();
         const channels = listChannelNumbers(db);
-        log.debug("scheduler scanning channels", {
-          count: channels.length,
-          leadMinutes: settings.regenLeadMinutes,
-        });
+        log.debug("scheduler scanning channels", { count: channels.length });
 
         for (const channel of channels) {
           if (overrides[channel.number]?.enabled === false) continue;
-
-          const promoPath = promoOutputFile(settings.outputPath, channel.name);
-          const missing = !fileExists(promoPath);
-
-          const windowStart = toUtcSqlite(
-            new Date(now.getTime() - 6 * 3600_000),
-          );
-
-          const nearby = getUpcomingPlayoutItems(
-            db,
-            channel.number,
-            windowStart,
-            40,
-          );
-
-          const currentAny = nearby.find((row) => {
-            const start = fromSqliteUtc(row.start).getTime();
-            const finish = fromSqliteUtc(row.finish).getTime();
-            return start <= now.getTime() && finish > now.getTime();
-          });
-
-          if (currentAny && (currentAny.fillerKind ?? 0) !== 0) {
-            continue;
-          }
 
           const current = getCurrentPrimaryItem(
             db,
@@ -102,58 +83,18 @@ export class RegenScheduler {
             toUtcSqlite(now),
           );
 
-          if (!current) {
-            if (missing && !this.jobs.hasPendingGenerate(channel.number)) {
-              log.info("scheduler enqueue (missing promo, no current item)", {
-                channel: channel.name,
-                number: channel.number,
-              });
+          if (!current) continue;
 
-              this.jobs.enqueue({
-                channelNumber: channel.number,
-                channelName: channel.name,
-                preferFront: true,
-              });
-
-              enqueued += 1;
-            }
-
+          const currentKey = `${current.mediaItemId}@${current.start}`;
+          const prev = this.lastCurrentKey.get(channel.number);
+          if (prev === currentKey) {
             continue;
           }
 
-          const finish = fromSqliteUtc(current.finish);
-          const itemStart = fromSqliteUtc(current.start);
+          this.lastCurrentKey.set(channel.number, currentKey);
 
-          // Regen window opens this far before the current item ends.
-          const regenAt = new Date(finish.getTime() - leadMs);
-
-          // Promo must be ready by the time the current item ends — not by regenAt,
-          // or every in-window enqueue would already be "late".
-          const readyBy = finish;
-          const remainingMs = finish.getTime() - now.getTime();
-          const itemShort = remainingMs < leadMs;
-          const inLeadWindow = regenAt.getTime() <= now.getTime();
-
-          // One auto job per current airing (same next-items). Manual generate bypasses this.
-          const lastGenAt = this.jobs.getLastGenerated(channel.number);
-          const alreadyGeneratedForItem =
-            Boolean(lastGenAt) &&
-            new Date(lastGenAt!).getTime() >= itemStart.getTime() &&
-            !missing;
-
-          if (alreadyGeneratedForItem) {
-            log.debug("scheduler skip (already generated for current item)", {
-              channel: channel.name,
-              number: channel.number,
-              lastGenAt,
-              itemStart: itemStart.toISOString(),
-            });
-
-            continue;
-          }
-
-          if (this.jobs.hasPendingGenerate(channel.number)) {
-            log.debug("scheduler skip (generate already pending)", {
+          if (this.jobs.hasPendingVoPrewarm(channel.number)) {
+            log.debug("scheduler skip VO (already pending)", {
               channel: channel.name,
               number: channel.number,
             });
@@ -161,26 +102,18 @@ export class RegenScheduler {
             continue;
           }
 
-          if (missing || itemShort || inLeadWindow) {
-            log.info("scheduler enqueue", {
-              channel: channel.name,
-              number: channel.number,
-              missing,
-              itemShort,
-              inLeadWindow,
-              readyBy: readyBy.toISOString(),
-              finish: finish.toISOString(),
-            });
+          log.info("scheduler enqueue VO prewarm (new current item)", {
+            channel: channel.name,
+            number: channel.number,
+            currentKey,
+          });
 
-            this.jobs.enqueue({
-              channelNumber: channel.number,
-              channelName: channel.name,
-              deadline: readyBy,
-              preferFront: missing || itemShort,
-            });
+          this.jobs.enqueueVoPrewarm({
+            channelNumber: channel.number,
+            channelName: channel.name,
+          });
 
-            enqueued += 1;
-          }
+          enqueued += 1;
         }
       } finally {
         db.close();

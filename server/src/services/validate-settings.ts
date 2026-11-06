@@ -156,6 +156,46 @@ export async function validateSettings(
     ),
   );
 
+  const remoteRoot =
+    settings.etvRemoteStreamsPath?.trim() ||
+    settings.etvLibraryPath?.trim() ||
+    settings.outputPath;
+
+  checks.push(dirStatus(remoteRoot, "Remote Streams path", true));
+
+  const onDemand = settings.etvOnDemandBaseUrl?.trim();
+  if (!onDemand) {
+    checks.push(
+      check(
+        "etvOnDemandBaseUrl",
+        "On-demand base URL",
+        true,
+        "Empty — required before Push wires live Remote Streams",
+      ),
+    );
+  } else {
+    try {
+      const u = new URL(onDemand);
+      checks.push(
+        check(
+          "etvOnDemandBaseUrl",
+          "On-demand base URL",
+          ["http:", "https:"].includes(u.protocol),
+          u.toString(),
+        ),
+      );
+    } catch {
+      checks.push(
+        check(
+          "etvOnDemandBaseUrl",
+          "On-demand base URL",
+          false,
+          "Invalid URL",
+        ),
+      );
+    }
+  }
+
   if (settings.etvPathPrefix && !settings.libraryPath) {
     checks.push(
       check(

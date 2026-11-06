@@ -20,6 +20,17 @@ export default defineConfig({
         },
       },
       "/media": "http://localhost:5174",
+      // Live MPEG-TS / fMP4 preview — must not buffer the whole response.
+      "/live": {
+        target: "http://localhost:5174",
+        timeout: 0,
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes) => {
+            proxyRes.headers["cache-control"] = "no-store, no-transform";
+            proxyRes.headers["x-accel-buffering"] = "no";
+          });
+        },
+      },
     },
   },
   build: {

@@ -215,6 +215,16 @@ function normalizeSettings(
     merged.etvLibraryPath = merged.outputPath;
   }
 
+  if (typeof merged.etvOnDemandBaseUrl !== "string") {
+    merged.etvOnDemandBaseUrl = DEFAULT_SETTINGS.etvOnDemandBaseUrl;
+  }
+
+  if (typeof merged.etvRemoteStreamsPath !== "string") {
+    merged.etvRemoteStreamsPath = DEFAULT_SETTINGS.etvRemoteStreamsPath;
+  } else if (merged.etvRemoteStreamsPath.trim()) {
+    merged.etvRemoteStreamsPath = path.resolve(merged.etvRemoteStreamsPath);
+  }
+
   return merged;
 }
 

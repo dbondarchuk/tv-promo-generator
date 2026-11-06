@@ -177,6 +177,23 @@ a.button {
   background: #000;
   aspect-ratio: 16 / 9;
 }
+.live-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.live-preview.idle {
+  min-height: 120px;
+  border-radius: 10px;
+  background: #000;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px;
+}
+.live-preview.idle button {
+  min-width: 140px;
+}
 .swatch {
   width: 18px;
   height: 18px;

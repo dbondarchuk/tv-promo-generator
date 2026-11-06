@@ -128,6 +128,7 @@ export function SettingsPage() {
     key: K,
     label: string,
     type: string = "text",
+    placeholder?: string,
   ) {
     return (
       <label>
@@ -135,6 +136,7 @@ export function SettingsPage() {
         <input
           type={type}
           value={String(settings![key] ?? "")}
+          placeholder={placeholder}
           onChange={(e) => {
             const raw = e.target.value;
             const value =
@@ -173,11 +175,30 @@ export function SettingsPage() {
           {field("outputPath", "Output path")}
           {field(
             "etvLibraryPath",
-            "ErsatzTV library path (as ETV sees promos)",
+            "ErsatzTV library path (legacy Other Video / fallback)",
+          )}
+          {field(
+            "etvOnDemandBaseUrl",
+            "On-demand base URL (this app, as ETV reaches it)",
+            "text",
+            "http://tv-promo-generator:5174",
+          )}
+          {field(
+            "etvRemoteStreamsPath",
+            "Remote Streams folder (YAML path ETV scans)",
+            "text",
+            "/promos",
           )}
           {field("regenLeadMinutes", "Regen lead time (minutes)", "number")}
           {field("timeZone", "Display timezone (IANA, e.g. America/New_York)")}
         </div>
+        <p className="muted">
+          Live promos use ErsatzTV Remote Streams: set the base URL (e.g.{" "}
+          <code>http://tv-promo-generator:5174</code>) and a folder mounted into
+          both containers for <code>next-items.yml</code> definitions. VO warms
+          when each primary starts; playback is HTTP MPEG-TS at{" "}
+          <code>/live/{"{channel}"}/promo.ts</code>.
+        </p>
       </section>
 
       <section>

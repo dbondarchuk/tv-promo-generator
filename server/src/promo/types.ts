@@ -18,6 +18,13 @@ export type PromoProgress = (
   level?: "info" | "warn" | "error",
 ) => void;
 
+/**
+ * synthesize — run TTS (file generate path).
+ * cache-only — use warm WAVs only; skip VO entirely if any item is cold (live air).
+ * off — never attach VO.
+ */
+export type PromoVoiceMode = "synthesize" | "cache-only" | "off";
+
 export interface PromoRenderRequest {
   channelName: string;
   channelNumber: string;
@@ -25,10 +32,13 @@ export interface PromoRenderRequest {
   color: string;
   logoPath?: string;
   chapters: PromoChapterSource[];
-  outputFile: string;
+  /** Required for file encode; unused for live MPEG-TS. */
+  outputFile?: string;
   workDir: string;
   fontFile: string;
   voiceEnabled: boolean;
+  /** Defaults to synthesize when voiceEnabled. */
+  voiceMode?: PromoVoiceMode;
   cachePath: string;
   onProgress?: PromoProgress;
 }
