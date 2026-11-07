@@ -19,13 +19,16 @@ import {
   findMediaItemByFileName,
   findMediaItemByPath,
   getPlayoutForChannel,
+  invalidateLibraryFolderEtags,
   openDb,
   promoNextNames,
   resetSchemaCache,
   scheduleSharedByOtherChannels,
+  updateRemoteStreamDuration,
   upsertFillerPresetForCollection,
   upsertManualCollection,
 } from "../ersatztv/db.js";
+import { getPromoTiming } from "../promo/layout.js";
 import { createLogger } from "../util/log.js";
 import { fileExists, promoOutputFile } from "../util/paths.js";
 import { loadChannelViews } from "./channels.js";
@@ -224,8 +227,29 @@ export async function pushToErsatzTv(
     }
 
     try {
-      progress(`Scanning library ${libraryId}`);
-      await api.scanLibrary(libraryId);
+      // ETV ForceScan skips folders whose etag still matches unless DeepScan.
+      // HTTP POST /api/libraries/{id}/scan cannot pass DeepScan=true, so clear
+      // etags first — required for YAML duration changes (e.g. 20s → 30s).
+      if (!fileMode) {
+        const cleared = await withWriteDb(
+          settings.etvDatabase,
+          progress,
+          (db) => invalidateLibraryFolderEtags(db, libraryId!),
+        );
+
+        progress(
+          `Cleared ${cleared} library folder etag(s) (force re-read YAML)`,
+        );
+      }
+
+      progress(
+        `Scanning library ${libraryId}` +
+          (fileMode ? "" : " (deep — etag bust + deepScan flag)"),
+      );
+
+      await api.scanLibrary(libraryId, {
+        deepScan: !fileMode,
+      });
     } catch (err) {
       const message = `Library scan failed: ${err instanceof Error ? err.message : String(err)}`;
       progress(message, "error");
@@ -311,6 +335,28 @@ export async function pushToErsatzTv(
       }
 
       progress(`  Media item ${mediaItemId}`);
+
+      if (!fileMode && mediaItemId != null) {
+        const promoSeconds = getPromoTiming(
+          settings.promoItemCount,
+        ).totalSeconds;
+
+        await withWriteDb(settings.etvDatabase, progress, (writeDb) => {
+          const updated = updateRemoteStreamDuration(
+            writeDb,
+            mediaItemId!,
+            promoSeconds,
+          );
+
+          progress(
+            `  Duration → ${promoSeconds}s` +
+              ` (RemoteStream=${updated.remoteStream ? "ok" : "skip"}` +
+              `, MediaVersion=${updated.mediaVersion ? "ok" : "skip"})`,
+          );
+
+          return updated;
+        });
+      }
     }
 
     try {

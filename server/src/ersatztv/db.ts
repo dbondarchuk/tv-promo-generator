@@ -1112,6 +1112,126 @@ export function ensureRemoteStreamLibrary(
   );
 }
 
+/**
+ * Clear LibraryFolder etags for a library so the next ForceScan re-parses
+ * YAML even when file mtimes look unchanged (Docker bind mounts, etc.).
+ * ETV's HTTP scan API cannot pass DeepScan=true; this is the equivalent.
+ */
+export function invalidateLibraryFolderEtags(
+  db: Database.Database,
+  libraryId: number,
+): number {
+  const schema = loadSchema(db);
+  if (
+    !schema.tables.has("LibraryFolder") ||
+    !schema.tables.has("LibraryPath")
+  ) {
+    return 0;
+  }
+
+  requireColumns(schema, "LibraryPath", ["Id", "LibraryId"]);
+  requireColumns(schema, "LibraryFolder", ["Etag", "LibraryPathId"]);
+
+  const info = db
+    .prepare(
+      `UPDATE LibraryFolder
+       SET Etag = ''
+       WHERE LibraryPathId IN (
+         SELECT Id FROM LibraryPath WHERE LibraryId = ?
+       )`,
+    )
+    .run(libraryId);
+
+  return info.changes;
+}
+
+/** .NET TimeSpan ticks (100ns) — common SQLite storage for Duration columns. */
+function durationTicks(seconds: number): number {
+  return Math.round(Math.max(0, seconds) * 10_000_000);
+}
+
+function durationHhMmSs(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const hh = String(Math.floor(s / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function coerceDurationValue(
+  seconds: number,
+  sample: unknown,
+): string | number {
+  if (sample == null) return durationTicks(seconds);
+
+  if (typeof sample === "string") {
+    if (sample.includes(":")) return durationHhMmSs(seconds);
+
+    const asNum = Number(sample);
+    if (Number.isFinite(asNum) && Math.abs(asNum) > 1_000_000) {
+      return String(durationTicks(seconds));
+    }
+  }
+
+  return durationTicks(seconds);
+}
+
+/**
+ * Point RemoteStream + MediaVersion Duration at the live promo length.
+ * ETV prefers MediaVersion.Duration when non-zero, so both must match YAML.
+ */
+export function updateRemoteStreamDuration(
+  db: Database.Database,
+  mediaItemId: number,
+  durationSeconds: number,
+): { remoteStream: boolean; mediaVersion: boolean } {
+  const schema = loadSchema(db);
+  let remoteStream = false;
+  let mediaVersion = false;
+
+  if (
+    schema.tables.has("RemoteStream") &&
+    schema.columns.get("RemoteStream")?.has("Duration")
+  ) {
+    const sample = db
+      .prepare(`SELECT Duration AS d FROM RemoteStream WHERE Id = ?`)
+      .get(mediaItemId) as { d: unknown } | undefined;
+
+    if (sample) {
+      const value = coerceDurationValue(durationSeconds, sample.d);
+      db.prepare(`UPDATE RemoteStream SET Duration = ? WHERE Id = ?`).run(
+        value,
+        mediaItemId,
+      );
+
+      remoteStream = true;
+    }
+  }
+
+  if (
+    schema.tables.has("MediaVersion") &&
+    schema.columns.get("MediaVersion")?.has("Duration") &&
+    schema.columns.get("MediaVersion")?.has("RemoteStreamId")
+  ) {
+    const sample = db
+      .prepare(
+        `SELECT Duration AS d FROM MediaVersion WHERE RemoteStreamId = ? LIMIT 1`,
+      )
+      .get(mediaItemId) as { d: unknown } | undefined;
+
+    if (sample) {
+      const value = coerceDurationValue(durationSeconds, sample.d);
+      db.prepare(
+        `UPDATE MediaVersion SET Duration = ? WHERE RemoteStreamId = ?`,
+      ).run(value, mediaItemId);
+
+      mediaVersion = true;
+    }
+  }
+
+  return { remoteStream, mediaVersion };
+}
+
 function findLocalMediaSource(db: Database.Database, schema: DbSchema): number {
   if (schema.tables.has("LocalMediaSource")) {
     const row = db

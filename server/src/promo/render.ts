@@ -848,6 +848,7 @@ export async function renderPromo(
         kind: "file",
         path: tempOut,
       }),
+      { onProgress: (message) => progress(message) },
     );
 
   let result = await encodeWith(settings);

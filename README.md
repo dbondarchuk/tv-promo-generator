@@ -244,7 +244,8 @@ When **Promo delivery** is File, the scheduler enqueues **generate** (bake `next
 
 1. Writes per-channel `next-items.yml` under Output path (URL = on-demand base + `/live/...`)
 2. Creates/updates Remote Stream library **Promo Generator Streams** at ErsatzTV library path
-3. Scans the library and waits for each `.yml` media item
+3. Busts library-folder etags and scans (so YAML duration changes are re-read; ETV’s HTTP scan cannot pass `DeepScan`)
+4. Waits for each `.yml` media item and writes `RemoteStream` / `MediaVersion` Duration to match promo length
 
 **File**
 
@@ -254,10 +255,10 @@ When **Promo delivery** is File, the scheduler enqueues **generate** (bake `next
 
 Then for both modes:
 
-4. Upserts manual collection `Promo Generator - Next - {channel name}` with that media item
-5. Upserts typed filler presets and wires selected schedule slots (pre / middle / post / tail)
-6. Optionally cleans legacy / unselected fillers
-7. Resets the channel playout
+- Upserts manual collection `Promo Generator - Next - {channel name}` with that media item
+- Upserts typed filler presets and wires selected schedule slots (pre / middle / post / tail)
+- Optionally cleans legacy / unselected fillers
+- Resets the channel playout
 
 Remote Stream requires **On-demand base URL**. Skipped when the playout is not classic, or the schedule is shared by multiple channels.
 

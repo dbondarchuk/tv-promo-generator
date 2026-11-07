@@ -2,6 +2,7 @@ import { AppSettings } from "@promo/shared";
 import type { Response } from "express";
 import fs from "node:fs";
 import path from "node:path";
+import { createFfmpegProgressReporter } from "../ffmpeg/progress.js";
 import { LivePromoContainer, startLivePromoEncode } from "../promo/render.js";
 import { createLogger } from "../util/log.js";
 import { markVoiceHashesInUse, releaseVoiceHashes } from "../voice/ledger.js";
@@ -275,9 +276,14 @@ async function createLiveSession(
     );
 
     const stderrChunks: Buffer[] = [];
+    const reportProgress = createFfmpegProgressReporter((message) => {
+      progress(message);
+    });
+
     live.process.stderr.on("data", (d: Buffer) => {
       stderrChunks.push(d);
       if (stderrChunks.length > 40) stderrChunks.shift();
+      reportProgress(d);
     });
 
     live.process.stdout.on("data", (chunk: Buffer) => {

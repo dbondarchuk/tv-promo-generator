@@ -125,8 +125,17 @@ export class EtvApiClient {
     return this.getJson<EtvApiChannel[]>("api/channels");
   }
 
-  scanLibrary(id: number): Promise<void> {
-    return this.post(`api/libraries/${id}/scan`);
+  /**
+   * Queue a library scan. `deepScan` is sent in the body for ETV builds that
+   * honor it; current public API still force-scans local libraries with
+   * DeepScan=false, so callers should also bust LibraryFolder etags.
+   */
+  scanLibrary(id: number, opts?: { deepScan?: boolean }): Promise<void> {
+    const deepScan = opts?.deepScan === true;
+    return this.post(
+      `api/libraries/${id}/scan`,
+      deepScan ? { deepScan: true } : undefined,
+    );
   }
 
   resetPlayout(channelNumber: string): Promise<void> {
