@@ -24,6 +24,8 @@ const log = createLogger("live-promo");
 const POST_ENCODE_GRACE_MS = 45_000;
 const PUMP_POLL_MS = 50;
 const HLS_SEGMENT_RE = /^seg\d{3}\.ts$/;
+/** MPEG-TS packets are always 188 bytes — only serve whole packets. */
+const TS_PACKET = 188;
 const LIVE_CONTAINER = "mpegts" as const;
 
 interface LiveSession {
@@ -34,13 +36,15 @@ interface LiveSession {
   childKill: () => void;
   voiceHashes: string[];
   workDir: string;
-  /** HLS playlist path (index.m3u8). */
-  outputPath: string;
+  /** HLS playlist path (index.m3u8) for UI preview. */
+  playlistPath: string;
+  /** Continuous MPEG-TS for ETV Remote Stream. */
+  mpegtsPath: string;
   jobId?: string;
   exitError?: string;
   encodeDone: boolean;
   lastAccessAt: number;
-  /** Active ETV continuous-TS pumps (concatenated HLS segments). */
+  /** Active ETV continuous-TS pumps. */
   tsReaders: number;
   endTimer?: NodeJS.Timeout;
 }
@@ -138,45 +142,6 @@ function scheduleEndIfIdle(key: string): void {
   }, POST_ENCODE_GRACE_MS);
 }
 
-/** Wait until a segment file exists and its size stops growing. */
-async function waitForStableSegment(
-  session: LiveSession,
-  segPath: string,
-  res: Response,
-): Promise<"ready" | "gone" | "abort"> {
-  const deadline = Date.now() + 120_000;
-
-  while (true) {
-    if (res.writableEnded || res.destroyed) return "abort";
-    if (session.exitError) {
-      throw new Error(session.exitError);
-    }
-
-    if (fs.existsSync(segPath)) {
-      let lastSize = -1;
-      for (let i = 0; i < 24; i++) {
-        if (res.writableEnded || res.destroyed) return "abort";
-
-        const size = fs.statSync(segPath).size;
-        if (size > 0 && size === lastSize) return "ready";
-
-        lastSize = size;
-        await sleep(25);
-      }
-
-      return "ready";
-    }
-
-    if (session.encodeDone) return "gone";
-
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${path.basename(segPath)}`);
-    }
-
-    await sleep(PUMP_POLL_MS);
-  }
-}
-
 function waitForDrain(res: Response): Promise<void> {
   if (res.writableEnded || res.destroyed) return Promise.resolve();
 
@@ -192,36 +157,6 @@ function waitForDrain(res: Response): Promise<void> {
     res.once("drain", onDrain);
     res.once("close", onClose);
   });
-}
-
-async function writeFileToResponse(
-  filePath: string,
-  res: Response,
-): Promise<void> {
-  const fd = fs.openSync(filePath, "r");
-  const buf = Buffer.alloc(64 * 1024);
-  try {
-    let offset = 0;
-    const size = fs.fstatSync(fd).size;
-
-    while (offset < size) {
-      if (res.writableEnded || res.destroyed) return;
-
-      const toRead = Math.min(buf.length, size - offset);
-      const n = fs.readSync(fd, buf, 0, toRead, offset);
-      if (n <= 0) break;
-
-      offset += n;
-      const ok = res.write(buf.subarray(0, n));
-      if (!ok) await waitForDrain(res);
-    }
-  } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // ignore
-    }
-  }
 }
 
 function playlistHasSegment(playlistPath: string): boolean {
@@ -275,7 +210,8 @@ async function createLiveSession(
 
     const workDir = liveWorkDir(settings.cachePath, channelNumber);
     fs.mkdirSync(workDir, { recursive: true });
-    const outputPath = path.join(workDir, "index.m3u8");
+    const playlistPath = path.join(workDir, "index.m3u8");
+    const mpegtsPath = path.join(workDir, "stream.ts");
 
     const live = await startLivePromoEncode(
       settings,
@@ -293,7 +229,8 @@ async function createLiveSession(
         cachePath: settings.cachePath,
         onProgress: progress,
       },
-      outputPath,
+      playlistPath,
+      mpegtsPath,
     );
 
     markVoiceHashesInUse(live.voiceHashes);
@@ -305,7 +242,8 @@ async function createLiveSession(
       totalSeconds: live.totalSeconds,
       voiceHashes: live.voiceHashes,
       workDir: live.workDir,
-      outputPath: live.outputPath,
+      playlistPath: live.playlistPath,
+      mpegtsPath: live.mpegtsPath,
       jobId: job?.id,
       encodeDone: false,
       lastAccessAt: Date.now(),
@@ -321,7 +259,7 @@ async function createLiveSession(
 
     sessions.set(key, session);
     progress(
-      `Live HLS · VO ${live.voiceHashes.length > 0 ? "on" : "off"} · ${built.chapters.length} chapter(s) · ${live.totalSeconds}s`,
+      `Live tee (TS+HLS) · VO ${live.voiceHashes.length > 0 ? "on" : "off"} · ${built.chapters.length} chapter(s) · ${live.totalSeconds}s`,
     );
 
     const stderrChunks: Buffer[] = [];
@@ -383,7 +321,8 @@ async function createLiveSession(
     log.info("live session started", {
       channel: channelNumber,
       name: built.channelName,
-      out: outputPath,
+      playlist: playlistPath,
+      mpegts: mpegtsPath,
       seconds: live.totalSeconds,
       vo: live.voiceHashes.length > 0,
     });
@@ -435,8 +374,8 @@ async function ensureSession(
 }
 
 /**
- * ETV Remote Stream: continuous MPEG-TS by concatenating finished HLS segments.
- * (ETV opens the URL as a streamed HTTP input — not as an HLS playlist.)
+ * ETV Remote Stream: continuous MPEG-TS from the live tee output.
+ * Only whole 188-byte packets are sent (avoids torn TS at the growing edge).
  */
 export async function serveLiveMpegTs(
   settings: AppSettings,
@@ -456,26 +395,96 @@ export async function serveLiveMpegTs(
     );
   }
 
+  // Wait until the continuous TS has at least one packet before headers.
+  const startDeadline = Date.now() + 120_000;
+  while (!res.writableEnded && !res.destroyed) {
+    if (session.exitError) throw new Error(session.exitError);
+
+    try {
+      if (
+        fs.existsSync(session.mpegtsPath) &&
+        fs.statSync(session.mpegtsPath).size >= TS_PACKET
+      ) {
+        break;
+      }
+    } catch {
+      // not ready
+    }
+
+    if (session.encodeDone) {
+      throw new Error("Live encode finished before any MPEG-TS data");
+    }
+
+    if (Date.now() > startDeadline) {
+      throw new Error("Timed out waiting for MPEG-TS output");
+    }
+
+    await sleep(PUMP_POLL_MS);
+  }
+
+  if (res.writableEnded || res.destroyed) {
+    session.tsReaders = Math.max(0, session.tsReaders - 1);
+    scheduleEndIfIdle(key);
+    return;
+  }
+
   res.status(200);
   res.setHeader("Content-Type", "video/MP2T");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Connection", "close");
 
-  let index = 0;
+  let offset = 0;
+  const buf = Buffer.alloc(64 * 1024);
+  let fd: number | undefined;
+
   try {
+    fd = fs.openSync(session.mpegtsPath, "r");
+
     while (!res.writableEnded && !res.destroyed) {
-      const segName = `seg${String(index).padStart(3, "0")}.ts`;
-      const segPath = path.join(session.workDir, segName);
-      const state = await waitForStableSegment(session, segPath, res);
+      let size = 0;
+      try {
+        size = fs.fstatSync(fd).size;
+      } catch {
+        break;
+      }
 
-      if (state === "abort") break;
-      if (state === "gone") break;
+      const readable = Math.floor((size - offset) / TS_PACKET) * TS_PACKET;
+      if (readable > 0) {
+        let left = readable;
+        while (left > 0 && !res.writableEnded && !res.destroyed) {
+          const n = fs.readSync(
+            fd,
+            buf,
+            0,
+            Math.min(buf.length, left),
+            offset,
+          );
+          if (n <= 0) break;
 
-      await writeFileToResponse(segPath, res);
-      touchAccess(session);
-      index += 1;
+          offset += n;
+          left -= n;
+          const ok = res.write(buf.subarray(0, n));
+          if (!ok) await waitForDrain(res);
+        }
+
+        touchAccess(session);
+        continue;
+      }
+
+      if (session.encodeDone) break;
+      if (session.exitError) throw new Error(session.exitError);
+
+      await sleep(PUMP_POLL_MS);
     }
   } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+
     session.tsReaders = Math.max(0, session.tsReaders - 1);
     try {
       if (!res.writableEnded) res.end();
@@ -487,7 +496,7 @@ export async function serveLiveMpegTs(
       jobQueue.logLiveStream(
         session.jobId,
         "info",
-        `ETV MPEG-TS pump finished · ${index} segment(s)`,
+        `ETV MPEG-TS pump finished · ${offset} bytes`,
       );
     }
 
@@ -516,12 +525,12 @@ export async function serveLiveHlsPlaylist(
   }
 
   const deadline = Date.now() + 60_000;
-  while (!playlistHasSegment(session.outputPath)) {
+  while (!playlistHasSegment(session.playlistPath)) {
     if (session.exitError) {
       throw new Error(session.exitError);
     }
 
-    if (session.encodeDone && !playlistHasSegment(session.outputPath)) {
+    if (session.encodeDone && !playlistHasSegment(session.playlistPath)) {
       throw new Error("HLS encode finished without a playable playlist");
     }
 
@@ -538,7 +547,7 @@ export async function serveLiveHlsPlaylist(
   res.status(200);
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
   res.setHeader("Cache-Control", "no-store");
-  fs.createReadStream(session.outputPath).pipe(res);
+  fs.createReadStream(session.playlistPath).pipe(res);
   res.on("close", () => scheduleEndIfIdle(key));
 }
 

@@ -68,7 +68,9 @@ export function writeChannelRemoteStreamYaml(
   // and ErsatzTV's scanner drops the file. Duration must stay a string for TimeSpan.TryParse.
   const body = [
     `url: ${yamlString(url)}`,
-    `is_live: true`,
+    // Finite on-demand promo — not an endless live feed. `true` makes ETV's
+    // ffmpeg use reconnect_streamed and stall when our HTTP response ends.
+    `is_live: false`,
     `duration: ${yamlString(duration)}`,
     `title: ${yamlString(`Promo Generator - Next - ${channelName}`)}`,
     "",

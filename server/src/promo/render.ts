@@ -669,14 +669,40 @@ async function preparePromoEncode(
   };
 }
 
+/** Escape a path for ffmpeg `-f tee` option values (colon is the kv separator). */
+function escapeTeePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/:/g, "\\:");
+}
+
+/**
+ * One encode → continuous MPEG-TS (ETV) + HLS playlist/segments (UI).
+ * Continuous TS avoids timestamp discontinuities from concatenating HLS parts.
+ */
+export function buildLiveTeeSpec(
+  playlistPath: string,
+  mpegtsPath: string,
+): string {
+  const segPattern = path.join(path.dirname(playlistPath), "seg%03d.ts");
+  const hls =
+    `[f=hls:hls_time=2:hls_list_size=0:hls_segment_type=mpegts` +
+    `:hls_flags=independent_segments+program_date_time` +
+    `:hls_segment_filename=${escapeTeePath(segPattern)}]` +
+    escapeTeePath(playlistPath);
+
+  const ts = `[f=mpegts]${escapeTeePath(mpegtsPath)}`;
+  return `${hls}|${ts}`;
+}
+
 function buildPromoFfmpegArgs(
   settings: AppSettings,
   req: PromoRenderRequest,
   prepared: PreparedPromoEncode,
   output:
     | { kind: "file"; path: string }
-    /** HLS playlist path; segments written beside it as seg%03d.ts */
-    | { kind: "hls"; playlistPath: string },
+    /** HLS only (unused by live — kept for clarity / tests). */
+    | { kind: "hls"; playlistPath: string }
+    /** Live: continuous MPEG-TS for ETV + HLS for UI. */
+    | { kind: "live"; playlistPath: string; mpegtsPath: string },
 ): string[] {
   const {
     timing,
@@ -781,8 +807,21 @@ function buildPromoFfmpegArgs(
     String(totalSeconds),
   );
 
-  if (output.kind === "hls") {
-    // Complete ~2s segments — ETV / browser pull finished parts (no torn .ts).
+  if (output.kind === "live") {
+    args.push(
+      "-g",
+      "60",
+      "-keyint_min",
+      "60",
+      "-sc_threshold",
+      "0",
+      "-force_key_frames",
+      "expr:gte(t,n_forced*2)",
+      "-f",
+      "tee",
+      buildLiveTeeSpec(output.playlistPath, output.mpegtsPath),
+    );
+  } else if (output.kind === "hls") {
     args.push(
       "-g",
       "60",
@@ -898,15 +937,18 @@ export function buildLiveHlsArgs(playlistPath: string): string[] {
 }
 
 /**
- * Live encode to HLS (VO cache-only). Shared by ETV Remote Stream and UI preview.
+ * Live encode to continuous MPEG-TS + HLS (VO cache-only).
+ * ETV reads the TS; Channels UI reads the playlist — same ffmpeg process.
  */
 export async function startLivePromoEncode(
   settings: AppSettings,
   req: PromoRenderRequest,
-  outputPath: string,
+  playlistPath: string,
+  mpegtsPath: string,
 ): Promise<{
   process: ChildProcessByStdio<null, null, Readable>;
-  outputPath: string;
+  playlistPath: string;
+  mpegtsPath: string;
   voiceHashes: string[];
   totalSeconds: number;
   workDir: string;
@@ -926,23 +968,26 @@ export async function startLivePromoEncode(
         : "triptych";
 
   progress(
-    `Live ${layoutLabel} HLS (m3u8 + seg.ts) (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
+    `Live ${layoutLabel} tee (MPEG-TS + HLS) (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
   );
 
   progress(`Encoder: ${describeEncoderPlan(settings)}`);
 
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.mkdirSync(path.dirname(playlistPath), { recursive: true });
+  fs.mkdirSync(path.dirname(mpegtsPath), { recursive: true });
 
   const args = buildPromoFfmpegArgs(settings, req, prepared, {
-    kind: "hls",
-    playlistPath: outputPath,
+    kind: "live",
+    playlistPath,
+    mpegtsPath,
   });
 
   const child = spawnFfmpegFile(args);
 
   return {
     process: child,
-    outputPath,
+    playlistPath,
+    mpegtsPath,
     voiceHashes: prepared.voiceHashes,
     totalSeconds: prepared.totalSeconds,
     workDir: req.workDir,

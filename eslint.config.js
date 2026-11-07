@@ -45,6 +45,7 @@ module.exports = [
       "tools/",
       "client/dist/",
       "server/dist/",
+      "server/cache/",
       "packages/shared/dist/",
       "**/*.tsbuildinfo",
     ],

@@ -218,12 +218,12 @@ When **Promo delivery** is Remote Stream, ErsatzTV fillers point at this app:
 
 ```yml
 url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.ts"
-is_live: true
+is_live: false
 duration: "00:00:30"
 title: "Promo Generator - Next - {channel name}"
 ```
 
-Live encode writes short HLS segments at full speed. **ETV** gets a continuous MPEG-TS at `promo.ts` (finished segments concatenated — avoids torn video from a growing single file). The **Channels UI** uses `promo.m3u8` + `hls.js` against the same encode. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
+One live ffmpeg **tee** writes a continuous MPEG-TS (`stream.ts`) and HLS (`index.m3u8` + `segNNN.ts`). **ETV** pulls `promo.ts` (188-byte-aligned pump of the continuous TS). The **Channels UI** uses `promo.m3u8` + `hls.js`. `is_live: false` because the promo is a finite on-demand asset — `true` makes ETV reconnect at EOF and stall. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
 
 ### VO prewarm + cache
 
