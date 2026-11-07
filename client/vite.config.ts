@@ -20,7 +20,7 @@ export default defineConfig({
         },
       },
       "/media": "http://localhost:5174",
-      // Live HLS (m3u8 + seg.ts) — must not buffer the whole response.
+      // Live MPEG-TS — must not buffer the whole response.
       "/live": {
         target: "http://localhost:5174",
         timeout: 0,

@@ -351,7 +351,8 @@ export async function pushToErsatzTv(
           progress(
             `  Duration → ${promoSeconds}s` +
               ` (RemoteStream=${updated.remoteStream ? "ok" : "skip"}` +
-              `, MediaVersion=${updated.mediaVersion ? "ok" : "skip"})`,
+              `, MediaVersion=${updated.mediaVersion ? "ok" : "skip"}` +
+              `, IsLive=${updated.isLiveCleared ? "0" : "skip"})`,
           );
 
           return updated;

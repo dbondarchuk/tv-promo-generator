@@ -1,24 +1,27 @@
-import Hls from "hls.js";
+import mpegts from "mpegts.js";
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Click-to-start live HLS preview (`promo.m3u8`; shares encode with ETV's `promo.ts`).
+ * Click-to-start live MPEG-TS preview (`promo.ts` — same URL ETV uses).
  * Avoids auto-starting an ffmpeg encode for every channel card.
  */
 export function LivePromoPreview(props: { src: string; channelLabel: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
+  const playerRef = useRef<mpegts.Player | null>(null);
   const [active, setActive] = useState(false);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     return () => {
-      const hls = hlsRef.current;
-      hlsRef.current = null;
-      if (hls) {
+      const player = playerRef.current;
+      playerRef.current = null;
+      if (player) {
         try {
-          hls.destroy();
+          player.pause();
+          player.unload();
+          player.detachMediaElement();
+          player.destroy();
         } catch {
           // ignore
         }
@@ -38,11 +41,14 @@ export function LivePromoPreview(props: { src: string; channelLabel: string }) {
   }, []);
 
   function teardownPlayer() {
-    const hls = hlsRef.current;
-    hlsRef.current = null;
-    if (hls) {
+    const player = playerRef.current;
+    playerRef.current = null;
+    if (player) {
       try {
-        hls.destroy();
+        player.pause();
+        player.unload();
+        player.detachMediaElement();
+        player.destroy();
       } catch {
         // ignore
       }
@@ -65,7 +71,7 @@ export function LivePromoPreview(props: { src: string; channelLabel: string }) {
     setStarting(true);
     setActive(true);
 
-    // Wait until React mounts <video> before attaching HLS.
+    // Wait until React mounts <video> before attaching the player.
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
@@ -78,55 +84,44 @@ export function LivePromoPreview(props: { src: string; channelLabel: string }) {
     }
 
     try {
-      if (Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: false,
-          liveDurationInfinity: true,
-        });
-
-        hlsRef.current = hls;
-        hls.loadSource(props.src);
-        hls.attachMedia(v);
-
-        await new Promise<void>((resolve, reject) => {
-          const onManifest = () => {
-            hls.off(Hls.Events.MANIFEST_PARSED, onManifest);
-            hls.off(Hls.Events.ERROR, onFail);
-            resolve();
-          };
-
-          const onFail = (
-            _event: string,
-            data: { fatal: boolean; type: string },
-          ) => {
-            if (!data.fatal) return;
-
-            hls.off(Hls.Events.MANIFEST_PARSED, onManifest);
-            hls.off(Hls.Events.ERROR, onFail);
-            reject(
-              new Error(
-                data.type === Hls.ErrorTypes.NETWORK_ERROR
-                  ? "HLS network error"
-                  : data.type === Hls.ErrorTypes.MEDIA_ERROR
-                    ? "HLS media error"
-                    : "HLS playback error",
-              ),
-            );
-          };
-
-          hls.on(Hls.Events.MANIFEST_PARSED, onManifest);
-          hls.on(Hls.Events.ERROR, onFail);
-        });
-
-        await v.play();
-      } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
-        v.src = props.src;
-        v.load();
-        await v.play();
-      } else {
-        setError("HLS is not supported in this browser");
+      if (!mpegts.isSupported()) {
+        setError("MPEG-TS playback is not supported in this browser");
+        return;
       }
+
+      // Workers reject relative URLs — resolve against the page origin.
+      const url = new URL(props.src, window.location.href).href;
+
+      const player = mpegts.createPlayer(
+        {
+          type: "mse",
+          isLive: true,
+          url,
+        },
+        {
+          enableWorker: true,
+          enableStashBuffer: true,
+          stashInitialSize: 384,
+          liveBufferLatencyChasing: false,
+        },
+      );
+
+      playerRef.current = player;
+      player.attachMediaElement(v);
+
+      player.on(mpegts.Events.ERROR, (_type, _detail, info) => {
+        const msg =
+          info && typeof info === "object" && "msg" in info
+            ? String((info as { msg?: string }).msg)
+            : "playback error";
+
+        setError(
+          `Live preview failed for ${props.channelLabel} (${msg}). Check server logs / upcoming media paths.`,
+        );
+      });
+
+      player.load();
+      await v.play();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       teardownPlayer();

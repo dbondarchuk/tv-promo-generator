@@ -47,10 +47,12 @@ export function runFfmpeg(
 /** Spawn ffmpeg writing to a file path in args; stderr piped for progress/errors. */
 export function spawnFfmpegFile(
   args: string[],
+  opts: { cwd?: string } = {},
 ): ChildProcessByStdio<null, null, Readable> {
   const { ffmpeg } = resolveFfmpegBinaries();
   return spawn(ffmpeg, ["-hide_banner", "-y", ...args], {
     windowsHide: true,
+    cwd: opts.cwd,
     stdio: ["ignore", "ignore", "pipe"] as const,
   });
 }

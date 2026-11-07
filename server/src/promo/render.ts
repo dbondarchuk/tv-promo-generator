@@ -669,40 +669,14 @@ async function preparePromoEncode(
   };
 }
 
-/** Escape a path for ffmpeg `-f tee` option values (colon is the kv separator). */
-function escapeTeePath(filePath: string): string {
-  return filePath.replace(/\\/g, "/").replace(/:/g, "\\:");
-}
-
-/**
- * One encode → continuous MPEG-TS (ETV) + HLS playlist/segments (UI).
- * Continuous TS avoids timestamp discontinuities from concatenating HLS parts.
- */
-export function buildLiveTeeSpec(
-  playlistPath: string,
-  mpegtsPath: string,
-): string {
-  const segPattern = path.join(path.dirname(playlistPath), "seg%03d.ts");
-  const hls =
-    `[f=hls:hls_time=2:hls_list_size=0:hls_segment_type=mpegts` +
-    `:hls_flags=independent_segments+program_date_time` +
-    `:hls_segment_filename=${escapeTeePath(segPattern)}]` +
-    escapeTeePath(playlistPath);
-
-  const ts = `[f=mpegts]${escapeTeePath(mpegtsPath)}`;
-  return `${hls}|${ts}`;
-}
-
 function buildPromoFfmpegArgs(
   settings: AppSettings,
   req: PromoRenderRequest,
   prepared: PreparedPromoEncode,
   output:
     | { kind: "file"; path: string }
-    /** HLS only (unused by live — kept for clarity / tests). */
-    | { kind: "hls"; playlistPath: string }
-    /** Live: continuous MPEG-TS for ETV + HLS for UI. */
-    | { kind: "live"; playlistPath: string; mpegtsPath: string },
+    /** Live continuous MPEG-TS (relative `stream.ts`, cwd=workDir). */
+    | { kind: "live" },
 ): string[] {
   const {
     timing,
@@ -808,6 +782,7 @@ function buildPromoFfmpegArgs(
   );
 
   if (output.kind === "live") {
+    // Relative stream.ts — caller must spawn ffmpeg with cwd=workDir.
     args.push(
       "-g",
       "60",
@@ -818,20 +793,12 @@ function buildPromoFfmpegArgs(
       "-force_key_frames",
       "expr:gte(t,n_forced*2)",
       "-f",
-      "tee",
-      buildLiveTeeSpec(output.playlistPath, output.mpegtsPath),
-    );
-  } else if (output.kind === "hls") {
-    args.push(
-      "-g",
-      "60",
-      "-keyint_min",
-      "60",
-      "-sc_threshold",
-      "0",
-      "-force_key_frames",
-      "expr:gte(t,n_forced*2)",
-      ...buildLiveHlsArgs(output.playlistPath),
+      "mpegts",
+      "-mpegts_flags",
+      "+resend_headers",
+      "-flush_packets",
+      "1",
+      "stream.ts",
     );
   } else {
     args.push("-movflags", "+faststart", output.path);
@@ -916,38 +883,16 @@ export async function renderPromo(
   return { voiceError: prepared.voiceError };
 }
 
-/** Shared HLS mux flags for live encode. */
-export function buildLiveHlsArgs(playlistPath: string): string[] {
-  const segPattern = path.join(path.dirname(playlistPath), "seg%03d.ts");
-  return [
-    "-f",
-    "hls",
-    "-hls_time",
-    "2",
-    "-hls_list_size",
-    "0",
-    "-hls_segment_type",
-    "mpegts",
-    "-hls_flags",
-    "independent_segments+program_date_time",
-    "-hls_segment_filename",
-    segPattern,
-    playlistPath,
-  ];
-}
-
 /**
- * Live encode to continuous MPEG-TS + HLS (VO cache-only).
- * ETV reads the TS; Channels UI reads the playlist — same ffmpeg process.
+ * Live encode to continuous MPEG-TS (VO cache-only).
+ * Same `stream.ts` is pumped to ETV and the Channels UI (mpegts.js).
  */
 export async function startLivePromoEncode(
   settings: AppSettings,
   req: PromoRenderRequest,
-  playlistPath: string,
   mpegtsPath: string,
 ): Promise<{
   process: ChildProcessByStdio<null, null, Readable>;
-  playlistPath: string;
   mpegtsPath: string;
   voiceHashes: string[];
   totalSeconds: number;
@@ -968,29 +913,27 @@ export async function startLivePromoEncode(
         : "triptych";
 
   progress(
-    `Live ${layoutLabel} tee (MPEG-TS + HLS) (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
+    `Live ${layoutLabel} MPEG-TS (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
   );
 
   progress(`Encoder: ${describeEncoderPlan(settings)}`);
 
-  fs.mkdirSync(path.dirname(playlistPath), { recursive: true });
-  fs.mkdirSync(path.dirname(mpegtsPath), { recursive: true });
+  const workDir = req.workDir;
+  fs.mkdirSync(workDir, { recursive: true });
 
   const args = buildPromoFfmpegArgs(settings, req, prepared, {
     kind: "live",
-    playlistPath,
-    mpegtsPath,
   });
 
-  const child = spawnFfmpegFile(args);
+  // Relative stream.ts requires cwd=workDir.
+  const child = spawnFfmpegFile(args, { cwd: workDir });
 
   return {
     process: child,
-    playlistPath,
     mpegtsPath,
     voiceHashes: prepared.voiceHashes,
     totalSeconds: prepared.totalSeconds,
-    workDir: req.workDir,
+    workDir,
     encodeSettings: settings,
   };
 }

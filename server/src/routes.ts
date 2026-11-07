@@ -31,11 +31,7 @@ import {
   listErsatzTvBackups,
 } from "./services/etv-backup.js";
 import { JobQueue } from "./services/jobs.js";
-import {
-  serveLiveHlsPlaylist,
-  serveLiveHlsSegment,
-  serveLiveMpegTs,
-} from "./services/livePromo.js";
+import { serveLiveMpegTs } from "./services/livePromo.js";
 import { validateSettings } from "./services/validate-settings.js";
 import { createLogger } from "./util/log.js";
 import {
@@ -579,7 +575,7 @@ export function createMediaRouter(getSettings: () => AppSettings): Router {
   return router;
 }
 
-/** Live HLS streams for ETV and the Channels page preview. */
+/** Live MPEG-TS for ETV Remote Stream and Channels UI preview. */
 export function createLiveRouter(getSettings: () => AppSettings): Router {
   const router = Router();
 
@@ -602,7 +598,6 @@ export function createLiveRouter(getSettings: () => AppSettings): Router {
     }
   }
 
-  /** ETV Remote Stream — continuous MPEG-TS (concatenated HLS segments). */
   router.get("/:channelNumber/promo.ts", async (req, res) => {
     const channelNumber = decodeURIComponent(req.params.channelNumber);
     const settings = getSettings();
@@ -612,41 +607,6 @@ export function createLiveRouter(getSettings: () => AppSettings): Router {
       await serveLiveMpegTs(settings, channelNumber, res);
     } catch (err) {
       await handleLiveError(channelNumber, "mpegts", res, err);
-    }
-  });
-
-  /** Channels UI preview — HLS playlist. */
-  router.get("/:channelNumber/promo.m3u8", async (req, res) => {
-    const channelNumber = decodeURIComponent(req.params.channelNumber);
-    const settings = getSettings();
-    log.info("live promo open", { channelNumber, container: "hls" });
-
-    try {
-      await serveLiveHlsPlaylist(settings, channelNumber, res);
-    } catch (err) {
-      await handleLiveError(channelNumber, "hls-playlist", res, err);
-    }
-  });
-
-  router.get("/:channelNumber/:segment", async (req, res, next) => {
-    const segment = req.params.segment;
-    if (!/^seg\d{3}\.ts$/i.test(segment)) {
-      next();
-      return;
-    }
-
-    const channelNumber = decodeURIComponent(req.params.channelNumber);
-    const settings = getSettings();
-
-    try {
-      await serveLiveHlsSegment(
-        settings,
-        channelNumber,
-        segment.toLowerCase(),
-        res,
-      );
-    } catch (err) {
-      await handleLiveError(channelNumber, "hls-segment", res, err);
     }
   });
 

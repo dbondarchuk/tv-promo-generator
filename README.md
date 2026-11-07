@@ -193,7 +193,7 @@ Use **Validate settings** to check paths, DB, ffmpeg, and API connectivity. **Re
 
 1. **Settings** — configure ErsatzTV + paths, then Validate / Save.
 2. **Channels** — list from ErsatzTV; toggle **enabled**; optional per-channel language and color.
-3. **Preview live** — on-demand HLS encode of the current next-up set (same path as ETV).
+3. **Preview live** — on-demand MPEG-TS encode of the current next-up set (same path as ETV).
 4. **Warm VO** / **Warm VO all** — pre-synthesize voice (when voice-over is enabled); the scheduler also warms VO when a new primary starts.
 5. **Push to ErsatzTV** — choose filler slots (pre / middle / post / tail) and cleanup options.
 6. **Rollback DB** — restore the last pre-push SQLite backup if needed.
@@ -223,7 +223,7 @@ duration: "00:00:30"
 title: "Promo Generator - Next - {channel name}"
 ```
 
-One live ffmpeg **tee** writes a continuous MPEG-TS (`stream.ts`) and HLS (`index.m3u8` + `segNNN.ts`). **ETV** pulls `promo.ts` (188-byte-aligned pump of the continuous TS). The **Channels UI** uses `promo.m3u8` + `hls.js`. `is_live: false` because the promo is a finite on-demand asset — `true` makes ETV reconnect at EOF and stall. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
+One live ffmpeg write produces a continuous MPEG-TS (`stream.ts`). **ETV** and the **Channels UI** (`mpegts.js`) both pull `promo.ts` (188-byte-aligned pump of that file). `is_live: false` because the promo is a finite on-demand asset — `true` makes ETV reconnect at EOF and stall. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
 
 ### VO prewarm + cache
 

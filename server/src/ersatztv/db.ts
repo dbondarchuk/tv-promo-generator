@@ -1177,17 +1177,19 @@ function coerceDurationValue(
 }
 
 /**
- * Point RemoteStream + MediaVersion Duration at the live promo length.
- * ETV prefers MediaVersion.Duration when non-zero, so both must match YAML.
+ * Point RemoteStream + MediaVersion at the live promo length, and force
+ * IsLive=0. YAML `is_live: false` alone is not enough — ETV keeps reconnect
+ * flags while RemoteStream.IsLive=1, which stalls when our finite HTTP ends.
  */
 export function updateRemoteStreamDuration(
   db: Database.Database,
   mediaItemId: number,
   durationSeconds: number,
-): { remoteStream: boolean; mediaVersion: boolean } {
+): { remoteStream: boolean; mediaVersion: boolean; isLiveCleared: boolean } {
   const schema = loadSchema(db);
   let remoteStream = false;
   let mediaVersion = false;
+  let isLiveCleared = false;
 
   if (
     schema.tables.has("RemoteStream") &&
@@ -1205,6 +1207,23 @@ export function updateRemoteStreamDuration(
       );
 
       remoteStream = true;
+    }
+  }
+
+  if (
+    schema.tables.has("RemoteStream") &&
+    schema.columns.get("RemoteStream")?.has("IsLive")
+  ) {
+    const exists = db
+      .prepare(`SELECT Id AS id FROM RemoteStream WHERE Id = ?`)
+      .get(mediaItemId) as { id: number } | undefined;
+
+    if (exists) {
+      db.prepare(`UPDATE RemoteStream SET IsLive = 0 WHERE Id = ?`).run(
+        mediaItemId,
+      );
+
+      isLiveCleared = true;
     }
   }
 
@@ -1229,7 +1248,7 @@ export function updateRemoteStreamDuration(
     }
   }
 
-  return { remoteStream, mediaVersion };
+  return { remoteStream, mediaVersion, isLiveCleared };
 }
 
 function findLocalMediaSource(db: Database.Database, schema: DbSchema): number {

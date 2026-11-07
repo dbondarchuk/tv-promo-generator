@@ -234,8 +234,8 @@ export function SettingsPage() {
               registers a Remote Streams library at{" "}
               <strong>ErsatzTV library path</strong>. On-demand base URL
               example: <code>http://tv-promo-generator:5174</code> → live{" "}
-              <code>/live/{"{channel}"}/promo.ts</code> (<code>is_live:
-              false</code>; UI preview uses <code>promo.m3u8</code>).
+              <code>/live/{"{channel}"}/promo.ts</code> (
+              <code>is_live: false</code>; same URL for UI preview).
             </>
           )}
         </p>
