@@ -34,6 +34,7 @@ import { JobQueue } from "./services/jobs.js";
 import {
   serveLiveHlsPlaylist,
   serveLiveHlsSegment,
+  serveLiveMpegTs,
 } from "./services/livePromo.js";
 import { validateSettings } from "./services/validate-settings.js";
 import { createLogger } from "./util/log.js";
@@ -601,12 +602,20 @@ export function createLiveRouter(getSettings: () => AppSettings): Router {
     }
   }
 
-  /** Legacy YAML pointed at promo.ts — send clients to the HLS playlist. */
-  router.get("/:channelNumber/promo.ts", (req, res) => {
+  /** ETV Remote Stream — continuous MPEG-TS (concatenated HLS segments). */
+  router.get("/:channelNumber/promo.ts", async (req, res) => {
     const channelNumber = decodeURIComponent(req.params.channelNumber);
-    res.redirect(302, `/live/${encodeURIComponent(channelNumber)}/promo.m3u8`);
+    const settings = getSettings();
+    log.info("live promo open", { channelNumber, container: "mpegts" });
+
+    try {
+      await serveLiveMpegTs(settings, channelNumber, res);
+    } catch (err) {
+      await handleLiveError(channelNumber, "mpegts", res, err);
+    }
   });
 
+  /** Channels UI preview — HLS playlist. */
   router.get("/:channelNumber/promo.m3u8", async (req, res) => {
     const channelNumber = decodeURIComponent(req.params.channelNumber);
     const settings = getSettings();

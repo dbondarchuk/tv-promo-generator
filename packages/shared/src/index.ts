@@ -90,7 +90,7 @@ export interface AppSettings {
   etvOnDemandBaseUrl: string;
   /**
    * `file` — bake next-items.mp4 and push as Other Video.
-   * `remote-stream` — write YAML + live MPEG-TS on play.
+   * `remote-stream` — write YAML + live encode on play (MPEG-TS for ETV, HLS for UI).
    */
   promoDeliveryMode: PromoDeliveryMode;
   cachePath: string;
@@ -278,8 +278,8 @@ export interface ChannelView {
   /** Baked MP4 URL for download/legacy preview, if present. */
   promoUrl?: string;
   /**
-   * Live HLS playlist for the Channels page (same path ETV uses:
-   * `/live/{number}/promo.m3u8`). Prefer this over promoUrl in the UI.
+   * Live HLS playlist for the Channels page (`/live/{number}/promo.m3u8`).
+   * Prefer this over promoUrl in the UI. ETV uses `promo.ts` (same encode).
    */
   livePromoUrl?: string;
   lastError?: string;

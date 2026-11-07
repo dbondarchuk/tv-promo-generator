@@ -2,7 +2,7 @@ import Hls from "hls.js";
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Click-to-start live HLS preview (same `promo.m3u8` path ETV uses).
+ * Click-to-start live HLS preview (`promo.m3u8`; shares encode with ETV's `promo.ts`).
  * Avoids auto-starting an ffmpeg encode for every channel card.
  */
 export function LivePromoPreview(props: { src: string; channelLabel: string }) {

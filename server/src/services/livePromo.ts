@@ -40,6 +40,8 @@ interface LiveSession {
   exitError?: string;
   encodeDone: boolean;
   lastAccessAt: number;
+  /** Active ETV continuous-TS pumps (concatenated HLS segments). */
+  tsReaders: number;
   endTimer?: NodeJS.Timeout;
 }
 
@@ -120,6 +122,7 @@ function scheduleEndIfIdle(key: string): void {
 
   // Keep running until encode finishes (clients poll between segments).
   if (!session.encodeDone) return;
+  if (session.tsReaders > 0) return;
 
   cancelScheduledEnd(session);
   log.info("live session idle — grace before stop", {
@@ -129,10 +132,96 @@ function scheduleEndIfIdle(key: string): void {
 
   session.endTimer = setTimeout(() => {
     const current = sessions.get(key);
-    if (!current || !current.encodeDone) return;
+    if (!current || !current.encodeDone || current.tsReaders > 0) return;
 
     endSession(key);
   }, POST_ENCODE_GRACE_MS);
+}
+
+/** Wait until a segment file exists and its size stops growing. */
+async function waitForStableSegment(
+  session: LiveSession,
+  segPath: string,
+  res: Response,
+): Promise<"ready" | "gone" | "abort"> {
+  const deadline = Date.now() + 120_000;
+
+  while (true) {
+    if (res.writableEnded || res.destroyed) return "abort";
+    if (session.exitError) {
+      throw new Error(session.exitError);
+    }
+
+    if (fs.existsSync(segPath)) {
+      let lastSize = -1;
+      for (let i = 0; i < 24; i++) {
+        if (res.writableEnded || res.destroyed) return "abort";
+
+        const size = fs.statSync(segPath).size;
+        if (size > 0 && size === lastSize) return "ready";
+
+        lastSize = size;
+        await sleep(25);
+      }
+
+      return "ready";
+    }
+
+    if (session.encodeDone) return "gone";
+
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out waiting for ${path.basename(segPath)}`);
+    }
+
+    await sleep(PUMP_POLL_MS);
+  }
+}
+
+function waitForDrain(res: Response): Promise<void> {
+  if (res.writableEnded || res.destroyed) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      resolve();
+    };
+
+    const onDrain = () => done();
+    const onClose = () => done();
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+  });
+}
+
+async function writeFileToResponse(
+  filePath: string,
+  res: Response,
+): Promise<void> {
+  const fd = fs.openSync(filePath, "r");
+  const buf = Buffer.alloc(64 * 1024);
+  try {
+    let offset = 0;
+    const size = fs.fstatSync(fd).size;
+
+    while (offset < size) {
+      if (res.writableEnded || res.destroyed) return;
+
+      const toRead = Math.min(buf.length, size - offset);
+      const n = fs.readSync(fd, buf, 0, toRead, offset);
+      if (n <= 0) break;
+
+      offset += n;
+      const ok = res.write(buf.subarray(0, n));
+      if (!ok) await waitForDrain(res);
+    }
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function playlistHasSegment(playlistPath: string): boolean {
@@ -220,6 +309,7 @@ async function createLiveSession(
       jobId: job?.id,
       encodeDone: false,
       lastAccessAt: Date.now(),
+      tsReaders: 0,
       childKill: () => {
         try {
           live.process.kill("SIGKILL");
@@ -345,7 +435,68 @@ async function ensureSession(
 }
 
 /**
- * Ensure HLS encode is running and return the playlist once it has a segment.
+ * ETV Remote Stream: continuous MPEG-TS by concatenating finished HLS segments.
+ * (ETV opens the URL as a streamed HTTP input — not as an HLS playlist.)
+ */
+export async function serveLiveMpegTs(
+  settings: AppSettings,
+  channelNumber: string,
+  res: Response,
+): Promise<void> {
+  const key = sessionKey(channelNumber);
+  const session = await ensureSession(settings, channelNumber);
+  touchAccess(session);
+  session.tsReaders += 1;
+
+  if (session.jobId && jobQueue) {
+    jobQueue.logLiveStream(
+      session.jobId,
+      "info",
+      `ETV MPEG-TS pump · encode ${session.encodeDone ? "done" : "running"}`,
+    );
+  }
+
+  res.status(200);
+  res.setHeader("Content-Type", "video/MP2T");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Connection", "close");
+
+  let index = 0;
+  try {
+    while (!res.writableEnded && !res.destroyed) {
+      const segName = `seg${String(index).padStart(3, "0")}.ts`;
+      const segPath = path.join(session.workDir, segName);
+      const state = await waitForStableSegment(session, segPath, res);
+
+      if (state === "abort") break;
+      if (state === "gone") break;
+
+      await writeFileToResponse(segPath, res);
+      touchAccess(session);
+      index += 1;
+    }
+  } finally {
+    session.tsReaders = Math.max(0, session.tsReaders - 1);
+    try {
+      if (!res.writableEnded) res.end();
+    } catch {
+      // ignore
+    }
+
+    if (session.jobId && jobQueue) {
+      jobQueue.logLiveStream(
+        session.jobId,
+        "info",
+        `ETV MPEG-TS pump finished · ${index} segment(s)`,
+      );
+    }
+
+    scheduleEndIfIdle(key);
+  }
+}
+
+/**
+ * UI preview: HLS playlist once the first segment exists.
  */
 export async function serveLiveHlsPlaylist(
   settings: AppSettings,
@@ -458,12 +609,13 @@ export async function serveLiveHlsSegment(
   });
 }
 
+/** Absolute URL written into Remote Stream YAML for ETV (continuous MPEG-TS). */
 export function livePromoUrl(baseUrl: string, channelNumber: string): string {
   const base = baseUrl.replace(/\/+$/, "");
-  return `${base}/live/${encodeURIComponent(channelNumber)}/promo.m3u8`;
+  return `${base}/live/${encodeURIComponent(channelNumber)}/promo.ts`;
 }
 
-/** Relative URL for Channels page HLS preview (same as ETV). */
+/** Relative URL for Channels page HLS preview. */
 export function livePreviewPath(channelNumber: string): string {
   return `/live/${encodeURIComponent(channelNumber)}/promo.m3u8`;
 }

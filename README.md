@@ -217,15 +217,13 @@ Per-channel language drives overlays and VO templates (e.g. `uk` → Ukrainian).
 When **Promo delivery** is Remote Stream, ErsatzTV fillers point at this app:
 
 ```yml
-url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.m3u8"
+url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.ts"
 is_live: true
 duration: "00:00:30"
 title: "Promo Generator - Next - {channel name}"
 ```
 
-Live encode writes short HLS segments at full speed; ETV pulls finished `segNNN.ts` parts (avoids torn video from a growing single `.ts`). 
-
-When ETV opens the URL, this app live-encodes the current “next up” set as **HLS** over HTTP. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
+Live encode writes short HLS segments at full speed. **ETV** gets a continuous MPEG-TS at `promo.ts` (finished segments concatenated — avoids torn video from a growing single file). The **Channels UI** uses `promo.m3u8` + `hls.js` against the same encode. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
 
 ### VO prewarm + cache
 
