@@ -25,6 +25,11 @@ const POST_ENCODE_GRACE_MS = 45_000;
 const PUMP_POLL_MS = 50;
 /** MPEG-TS packets are always 188 bytes — only serve whole packets. */
 const TS_PACKET = 188;
+/**
+ * While ffmpeg is still writing, hold back the last N bytes so we never serve
+ * a TS packet that straddles an incomplete PES/AAC frame at the growing edge.
+ */
+const GROWING_TRAIL_BYTES = 256 * 1024;
 const LIVE_CONTAINER = "mpegts" as const;
 
 interface LiveSession {
@@ -359,7 +364,11 @@ async function ensureSession(
 
 /**
  * Continuous MPEG-TS for ETV Remote Stream and Channels UI (mpegts.js).
- * Only whole 188-byte packets are sent (avoids torn TS at the growing edge).
+ * Only whole 188-byte packets are sent. After the file is fully pumped we
+ * keep the HTTP connection open until the client disconnects — ETV still
+ * adds reconnect_streamed for HTTP inputs even when IsLive=0, and closing
+ * early (while -readrate 1.0 is mid-item) causes reconnect + AAC decode
+ * corruption ("channel element … is not allocated").
  */
 export async function serveLiveMpegTs(
   settings: AppSettings,
@@ -415,7 +424,9 @@ export async function serveLiveMpegTs(
   res.status(200);
   res.setHeader("Content-Type", "video/MP2T");
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "close");
+  // Leave connection open after body so ETV's readrate/reconnect does not
+  // treat early EOF as a live reconnect.
+  res.setHeader("Connection", "keep-alive");
 
   let offset = 0;
   const buf = Buffer.alloc(64 * 1024);
@@ -432,7 +443,14 @@ export async function serveLiveMpegTs(
         break;
       }
 
-      const readable = Math.floor((size - offset) / TS_PACKET) * TS_PACKET;
+      // Hold back the growing edge until encode finishes.
+      const servedLimit = session.encodeDone
+        ? size
+        : Math.max(0, size - GROWING_TRAIL_BYTES);
+
+      const readable =
+        Math.floor(Math.max(0, servedLimit - offset) / TS_PACKET) * TS_PACKET;
+
       if (readable > 0) {
         let left = readable;
         while (left > 0 && !res.writableEnded && !res.destroyed) {
@@ -459,6 +477,37 @@ export async function serveLiveMpegTs(
       if (session.exitError) throw new Error(session.exitError);
 
       await sleep(PUMP_POLL_MS);
+    }
+
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+
+      fd = undefined;
+    }
+
+    if (session.jobId && jobQueue) {
+      jobQueue.logLiveStream(
+        session.jobId,
+        "info",
+        `MPEG-TS bytes sent · ${offset} — holding connection for client`,
+      );
+    }
+
+    // Park until ETV/UI closes (readrate may still be draining its buffer).
+    const holdDeadline =
+      Date.now() + Math.max(60_000, (session.totalSeconds + 30) * 1000);
+
+    while (
+      !res.writableEnded &&
+      !res.destroyed &&
+      Date.now() < holdDeadline
+    ) {
+      touchAccess(session);
+      await sleep(500);
     }
   } finally {
     if (fd != null) {
