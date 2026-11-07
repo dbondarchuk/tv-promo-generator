@@ -27,9 +27,15 @@ const PUMP_POLL_MS = 50;
 const TS_PACKET = 188;
 /**
  * While ffmpeg is still writing, hold back the last N bytes so we never serve
- * a TS packet that straddles an incomplete PES/AAC frame at the growing edge.
+ * a torn PES/AAC frame at the growing edge.
  */
 const GROWING_TRAIL_BYTES = 256 * 1024;
+/**
+ * Hold first byte until we have this much TS (or encode finishes). Gives ETV's
+ * -readrate 1.0 a head start so the playhead does not catch a slow encode at
+ * the item-2→3 transition (~18s). ~2.2 Mbps AAC+H264 ≈ 275 KB/s → 3 MB ≈ 11s.
+ */
+const PREBUFFER_BYTES = 3 * 1024 * 1024;
 const LIVE_CONTAINER = "mpegts" as const;
 
 interface LiveSession {
@@ -78,6 +84,23 @@ function liveWorkDir(cachePath: string, channelNumber: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function waitForDrain(res: Response): Promise<void> {
+  if (res.writableEnded || res.destroyed) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      resolve();
+    };
+
+    const onDrain = () => done();
+    const onClose = () => done();
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+  });
 }
 
 function cancelScheduledEnd(session: LiveSession): void {
@@ -142,23 +165,6 @@ function scheduleEndIfIdle(key: string): void {
 
     endSession(key);
   }, POST_ENCODE_GRACE_MS);
-}
-
-function waitForDrain(res: Response): Promise<void> {
-  if (res.writableEnded || res.destroyed) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const done = () => {
-      res.off("drain", onDrain);
-      res.off("close", onClose);
-      resolve();
-    };
-
-    const onDrain = () => done();
-    const onClose = () => done();
-    res.once("drain", onDrain);
-    res.once("close", onClose);
-  });
 }
 
 async function createLiveSession(
@@ -364,11 +370,14 @@ async function ensureSession(
 
 /**
  * Continuous MPEG-TS for ETV Remote Stream and Channels UI (mpegts.js).
- * Only whole 188-byte packets are sent. After the file is fully pumped we
- * keep the HTTP connection open until the client disconnects — ETV still
- * adds reconnect_streamed for HTTP inputs even when IsLive=0, and closing
- * early (while -readrate 1.0 is mid-item) causes reconnect + AAC decode
- * corruption ("channel element … is not allocated").
+ *
+ * Progressive pump (on-the-fly): wait for a short prebuffer, then stream whole
+ * 188-byte packets while holding back a trailing edge during encode. After the
+ * file is fully pumped we keep the HTTP connection open until the client
+ * disconnects — ETV adds reconnect_streamed for HTTP inputs, and closing early
+ * (while -readrate 1.0 is mid-item) causes reconnect + AAC decode corruption.
+ *
+ * Pair with YAML/DB `is_live: true` so ETV stays realtime (no SeekAndWorkAhead).
  */
 export async function serveLiveMpegTs(
   settings: AppSettings,
@@ -388,31 +397,44 @@ export async function serveLiveMpegTs(
     );
   }
 
-  // Wait until the continuous TS has at least one packet before headers.
-  const startDeadline = Date.now() + 120_000;
+  // Prebuffer so realtime playback does not underrun on a sub-1x encode.
+  const startDeadline = Date.now() + 180_000;
+  let readyBytes = 0;
   while (!res.writableEnded && !res.destroyed) {
     if (session.exitError) throw new Error(session.exitError);
 
     try {
-      if (
-        fs.existsSync(session.mpegtsPath) &&
-        fs.statSync(session.mpegtsPath).size >= TS_PACKET
-      ) {
-        break;
+      if (fs.existsSync(session.mpegtsPath)) {
+        readyBytes = fs.statSync(session.mpegtsPath).size;
       }
     } catch {
-      // not ready
+      readyBytes = 0;
     }
 
     if (session.encodeDone) {
-      throw new Error("Live encode finished before any MPEG-TS data");
+      if (readyBytes < TS_PACKET) {
+        throw new Error("Live encode finished before any MPEG-TS data");
+      }
+
+      break;
     }
 
+    if (readyBytes >= PREBUFFER_BYTES) break;
+
     if (Date.now() > startDeadline) {
-      throw new Error("Timed out waiting for MPEG-TS output");
+      throw new Error("Timed out waiting for MPEG-TS prebuffer");
     }
 
     await sleep(PUMP_POLL_MS);
+  }
+
+  if (session.jobId && jobQueue) {
+    jobQueue.logLiveStream(
+      session.jobId,
+      "info",
+      `MPEG-TS prebuffer · ${readyBytes} bytes` +
+        `${session.encodeDone ? " (encode done)" : ""}`,
+    );
   }
 
   if (res.writableEnded || res.destroyed) {

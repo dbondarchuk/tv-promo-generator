@@ -235,7 +235,7 @@ export function SettingsPage() {
               <strong>ErsatzTV library path</strong>. On-demand base URL
               example: <code>http://tv-promo-generator:5174</code> → live{" "}
               <code>/live/{"{channel}"}/promo.ts</code> (
-              <code>is_live: false</code>; same URL for UI preview).
+              <code>is_live: true</code>; same URL for UI preview).
             </>
           )}
         </p>

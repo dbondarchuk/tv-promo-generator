@@ -352,7 +352,7 @@ export async function pushToErsatzTv(
             `  Duration → ${promoSeconds}s` +
               ` (RemoteStream=${updated.remoteStream ? "ok" : "skip"}` +
               `, MediaVersion=${updated.mediaVersion ? "ok" : "skip"}` +
-              `, IsLive=${updated.isLiveCleared ? "0" : "skip"})`,
+              `, IsLive=${updated.isLiveSet ? "1" : "skip"})`,
           );
 
           return updated;
