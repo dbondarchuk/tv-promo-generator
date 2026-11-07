@@ -669,16 +669,14 @@ async function preparePromoEncode(
   };
 }
 
-export type LivePromoContainer = "mpegts" | "fmp4";
-
 function buildPromoFfmpegArgs(
   settings: AppSettings,
   req: PromoRenderRequest,
   prepared: PreparedPromoEncode,
   output:
     | { kind: "file"; path: string }
-    | { kind: "mpegts-file"; path: string }
-    | { kind: "fmp4-file"; path: string },
+    /** HLS playlist path; segments written beside it as seg%03d.ts */
+    | { kind: "hls"; playlistPath: string },
 ): string[] {
   const {
     timing,
@@ -783,37 +781,18 @@ function buildPromoFfmpegArgs(
     String(totalSeconds),
   );
 
-  if (output.kind === "mpegts-file") {
-    // Growing .ts on disk — readers stream from byte 0 (incl. late joiners).
+  if (output.kind === "hls") {
+    // Complete ~2s segments — ETV / browser pull finished parts (no torn .ts).
     args.push(
-      "-f",
-      "mpegts",
-      "-muxdelay",
+      "-g",
+      "60",
+      "-keyint_min",
+      "60",
+      "-sc_threshold",
       "0",
-      "-muxpreload",
-      "0",
-      "-flush_packets",
-      "1",
-      "-pat_period",
-      "0.1",
-      "-sdt_period",
-      "0.5",
-      "-mpegts_flags",
-      "+resend_headers",
-      output.path,
-    );
-  } else if (output.kind === "fmp4-file") {
-    // Fragmented MP4 for HTML5 <video> preview (browsers cannot play MPEG-TS).
-    args.push(
-      "-f",
-      "mp4",
-      "-movflags",
-      "frag_keyframe+empty_moov+default_base_moof",
-      "-flush_packets",
-      "1",
-      "-tag:v",
-      "avc1",
-      output.path,
+      "-force_key_frames",
+      "expr:gte(t,n_forced*2)",
+      ...buildLiveHlsArgs(output.playlistPath),
     );
   } else {
     args.push("-movflags", "+faststart", output.path);
@@ -898,14 +877,32 @@ export async function renderPromo(
   return { voiceError: prepared.voiceError };
 }
 
+/** Shared HLS mux flags for live encode. */
+export function buildLiveHlsArgs(playlistPath: string): string[] {
+  const segPattern = path.join(path.dirname(playlistPath), "seg%03d.ts");
+  return [
+    "-f",
+    "hls",
+    "-hls_time",
+    "2",
+    "-hls_list_size",
+    "0",
+    "-hls_segment_type",
+    "mpegts",
+    "-hls_flags",
+    "independent_segments+program_date_time",
+    "-hls_segment_filename",
+    segPattern,
+    playlistPath,
+  ];
+}
+
 /**
- * Live encode to a growing file (VO cache-only). Readers stream that file from
- * byte 0 — including late joiners — while ffmpeg is still writing.
+ * Live encode to HLS (VO cache-only). Shared by ETV Remote Stream and UI preview.
  */
 export async function startLivePromoEncode(
   settings: AppSettings,
   req: PromoRenderRequest,
-  container: LivePromoContainer = "mpegts",
   outputPath: string,
 ): Promise<{
   process: ChildProcessByStdio<null, null, Readable>;
@@ -913,7 +910,6 @@ export async function startLivePromoEncode(
   voiceHashes: string[];
   totalSeconds: number;
   workDir: string;
-  container: LivePromoContainer;
   encodeSettings: AppSettings;
 }> {
   const progress = req.onProgress ?? (() => undefined);
@@ -929,30 +925,17 @@ export async function startLivePromoEncode(
         ? "dual"
         : "triptych";
 
-  const fileKind = container === "fmp4" ? "fmp4-file" : "mpegts-file";
-  // Browser <video> is picky about HW bitstreams — preview uses software H264.
-  const encodeSettings =
-    container === "fmp4"
-      ? { ...settings, hardwareAcceleration: "None" as const }
-      : settings;
-
   progress(
-    `Live ${layoutLabel} ${container} file-backed (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
+    `Live ${layoutLabel} HLS (m3u8 + seg.ts) (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
   );
 
-  if (container === "fmp4" && settings.hardwareAcceleration !== "None") {
-    progress(
-      `Preview forces software encode (settings hwaccel=${settings.hardwareAcceleration} ignored)`,
-    );
-  }
-
-  progress(`Encoder: ${describeEncoderPlan(encodeSettings)}`);
+  progress(`Encoder: ${describeEncoderPlan(settings)}`);
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  const args = buildPromoFfmpegArgs(encodeSettings, req, prepared, {
-    kind: fileKind,
-    path: outputPath,
+  const args = buildPromoFfmpegArgs(settings, req, prepared, {
+    kind: "hls",
+    playlistPath: outputPath,
   });
 
   const child = spawnFfmpegFile(args);
@@ -963,7 +946,6 @@ export async function startLivePromoEncode(
     voiceHashes: prepared.voiceHashes,
     totalSeconds: prepared.totalSeconds,
     workDir: req.workDir,
-    container,
-    encodeSettings,
+    encodeSettings: settings,
   };
 }

@@ -8,7 +8,7 @@ import {
   summarizeHwFailure,
 } from "../ffmpeg/hwaccel.js";
 import { createFfmpegProgressReporter } from "../ffmpeg/progress.js";
-import { LivePromoContainer, startLivePromoEncode } from "../promo/render.js";
+import { startLivePromoEncode } from "../promo/render.js";
 import { createLogger } from "../util/log.js";
 import { markVoiceHashesInUse, releaseVoiceHashes } from "../voice/ledger.js";
 import {
@@ -20,38 +20,26 @@ import type { JobQueue } from "./jobs.js";
 
 const log = createLogger("live-promo");
 
-/** Keep session after last reader so ETV probe/reconnect can re-open the file. */
-const DISCONNECT_GRACE_MS = 5_000;
-/** After encode finishes, keep the file briefly for late joiners. */
-const POST_ENCODE_GRACE_MS = 20_000;
-/** Don't send headers until the mux has at least this much data. */
-const MIN_BYTES_BEFORE_STREAM = 64 * 1024;
-/** MPEG-TS packet size — never expose a torn trailing packet from a growing file. */
-const TS_PACKET_SIZE = 188;
-/** While ffmpeg is still writing, withhold this many trailing packets. */
-const TS_WRITE_MARGIN_PACKETS = 48;
+/** After encode finishes, keep HLS segments available for late pulls. */
+const POST_ENCODE_GRACE_MS = 45_000;
 const PUMP_POLL_MS = 50;
-const PUMP_CHUNK = 64 * 1024;
-/** Slightly ahead of realtime so ETV doesn't underrun; keeps HTTP open ~promo length. */
-const PACE_AHEAD = 1.05;
-/** Nominal mux rate while final size is unknown (~4.4 Mbps). */
-const NOMINAL_BYTES_PER_SEC = 550_000;
+const HLS_SEGMENT_RE = /^seg\d{3}\.ts$/;
+const LIVE_CONTAINER = "mpegts" as const;
 
 interface LiveSession {
   key: string;
   channelNumber: string;
-  container: LivePromoContainer;
   startedAt: number;
   totalSeconds: number;
-  readers: Set<Response>;
   childKill: () => void;
   voiceHashes: string[];
   workDir: string;
+  /** HLS playlist path (index.m3u8). */
   outputPath: string;
-  contentType: string;
   jobId?: string;
   exitError?: string;
   encodeDone: boolean;
+  lastAccessAt: number;
   endTimer?: NodeJS.Timeout;
 }
 
@@ -65,32 +53,17 @@ export function setLivePromoJobs(jobs: JobQueue): void {
   jobQueue = jobs;
 }
 
-function sessionKey(
-  channelNumber: string,
-  container: LivePromoContainer,
-): string {
-  return `${channelNumber}:${container}`;
+function sessionKey(channelNumber: string): string {
+  return `${channelNumber}:${LIVE_CONTAINER}`;
 }
 
-function contentTypeFor(container: LivePromoContainer): string {
-  return container === "fmp4" ? "video/mp4" : "video/MP2T";
-}
-
-function liveOutputName(container: LivePromoContainer): string {
-  return container === "fmp4" ? "preview.mp4" : "promo.ts";
-}
-
-function liveWorkDir(
-  cachePath: string,
-  channelNumber: string,
-  container: LivePromoContainer,
-): string {
+function liveWorkDir(cachePath: string, channelNumber: string): string {
   return path.join(
     cachePath,
     "work",
     "live",
     channelNumber,
-    container,
+    LIVE_CONTAINER,
     String(Date.now()),
   );
 }
@@ -119,14 +92,6 @@ function endSession(key: string): void {
     // ignore
   }
 
-  for (const res of session.readers) {
-    try {
-      if (!res.writableEnded) res.end();
-    } catch {
-      // ignore
-    }
-  }
-
   try {
     fs.rmSync(session.workDir, { recursive: true, force: true });
   } catch {
@@ -141,327 +106,56 @@ function endSession(key: string): void {
     );
   }
 
-  log.info("live session ended", {
-    channel: session.channelNumber,
-    container: session.container,
-  });
+  log.info("live session ended", { channel: session.channelNumber });
 }
 
-function scheduleEndIfIdle(key: string, graceMs: number): void {
+function touchAccess(session: LiveSession): void {
+  session.lastAccessAt = Date.now();
+  cancelScheduledEnd(session);
+}
+
+function scheduleEndIfIdle(key: string): void {
   const session = sessions.get(key);
-  if (!session || session.readers.size > 0) return;
+  if (!session) return;
+
+  // Keep running until encode finishes (clients poll between segments).
+  if (!session.encodeDone) return;
 
   cancelScheduledEnd(session);
   log.info("live session idle — grace before stop", {
     channel: session.channelNumber,
-    container: session.container,
-    graceMs,
-    encodeDone: session.encodeDone,
+    graceMs: POST_ENCODE_GRACE_MS,
   });
 
   session.endTimer = setTimeout(() => {
     const current = sessions.get(key);
-    if (current && current.readers.size === 0) {
-      endSession(key);
-    }
-  }, graceMs);
+    if (!current || !current.encodeDone) return;
+
+    endSession(key);
+  }, POST_ENCODE_GRACE_MS);
 }
 
-function writeLiveHeaders(
-  res: Response,
-  contentType: string,
-  contentLength?: number,
-): void {
-  if (res.headersSent) return;
-
-  res.status(200);
-  res.setHeader("Content-Type", contentType);
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Connection", "close");
-  if (contentLength != null && contentLength >= 0) {
-    res.setHeader("Content-Length", String(contentLength));
-  }
-}
-
-/** Wait for writable drain without leaking close listeners. */
-function waitForDrain(res: Response): Promise<void> {
-  if (res.writableEnded || res.destroyed) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const done = () => {
-      res.off("drain", onDrain);
-      res.off("close", onClose);
-      resolve();
-    };
-
-    const onDrain = () => done();
-    const onClose = () => done();
-    res.once("drain", onDrain);
-    res.once("close", onClose);
-  });
-}
-
-/** Readable byte length for a mux file (TS-aligned + write margin while encoding). */
-function readableFileSize(
-  rawSize: number,
-  container: LivePromoContainer,
-  encodeDone: boolean,
-): number {
-  if (rawSize <= 0) return 0;
-  if (container !== "mpegts" || encodeDone) return rawSize;
-
-  const aligned = Math.floor(rawSize / TS_PACKET_SIZE) * TS_PACKET_SIZE;
-  const margin = TS_WRITE_MARGIN_PACKETS * TS_PACKET_SIZE;
-  return Math.max(0, aligned - margin);
-}
-
-function pacedMaxOffset(
-  readerStartMs: number,
-  totalSeconds: number,
-  fileSize: number,
-  encodeDone: boolean,
-  nowMs: number,
-): number {
-  if (fileSize <= 0 || totalSeconds <= 0) return 0;
-
-  const elapsedSec = ((nowMs - readerStartMs) / 1000) * PACE_AHEAD;
-  const bytesPerSec =
-    encodeDone && fileSize > 0
-      ? fileSize / totalSeconds
-      : NOMINAL_BYTES_PER_SEC;
-
-  return Math.min(fileSize, Math.floor(bytesPerSec * elapsedSec));
-}
-
-/**
- * Stream the live mux from byte 0 while it grows.
- *
- * MPEG-TS: only complete 188-byte packets (plus a write margin) so the first
- * client doesn't get torn video; paced ~1x so the HTTP body lasts ~promo
- * duration (ETV reconnect_streamed). Late joiners after encodeDone get
- * Content-Length and a full finite body.
- *
- * Does NOT wait for encode to finish — that would burn wall-clock airtime.
- */
-async function pumpGrowingFile(
-  session: LiveSession,
-  res: Response,
-): Promise<void> {
-  const { outputPath } = session;
-  let offset = 0;
-  const buf = Buffer.alloc(PUMP_CHUNK);
-  const readerStartMs = Date.now();
-  const paceRealtime = session.container === "mpegts";
-
-  while (!session.encodeDone) {
-    if (res.writableEnded || res.destroyed || !session.readers.has(res)) {
-      return;
-    }
-
-    try {
-      if (
-        fs.existsSync(outputPath) &&
-        readableFileSize(
-          fs.statSync(outputPath).size,
-          session.container,
-          false,
-        ) >= MIN_BYTES_BEFORE_STREAM
-      ) {
-        break;
-      }
-    } catch {
-      // file not ready
-    }
-
-    await sleep(PUMP_POLL_MS);
-  }
-
-  if (res.writableEnded || res.destroyed || !session.readers.has(res)) {
-    return;
-  }
-
-  const serveFinished = session.encodeDone;
-  let contentLength: number | undefined;
-  if (serveFinished) {
-    try {
-      contentLength = fs.statSync(outputPath).size;
-    } catch {
-      return;
-    }
-  }
-
-  writeLiveHeaders(res, session.contentType, contentLength);
-
-  let fd: number | undefined;
+function playlistHasSegment(playlistPath: string): boolean {
   try {
-    try {
-      fd = fs.openSync(outputPath, "r");
-    } catch {
-      return;
-    }
-
-    while (session.readers.has(res) && !res.writableEnded && !res.destroyed) {
-      let rawSize = 0;
-      try {
-        rawSize = fs.fstatSync(fd).size;
-      } catch {
-        break;
-      }
-
-      const size = readableFileSize(
-        rawSize,
-        session.container,
-        session.encodeDone,
-      );
-
-      if (offset < size) {
-        let toRead = Math.min(PUMP_CHUNK, size - offset);
-
-        if (paceRealtime && !serveFinished) {
-          const maxOffset = pacedMaxOffset(
-            readerStartMs,
-            session.totalSeconds,
-            size,
-            session.encodeDone,
-            Date.now(),
-          );
-
-          if (offset >= maxOffset) {
-            await sleep(PUMP_POLL_MS);
-            continue;
-          }
-
-          toRead = Math.min(toRead, maxOffset - offset);
-          if (toRead <= 0) {
-            await sleep(PUMP_POLL_MS);
-            continue;
-          }
-
-          // Keep MPEG-TS packet alignment on every write.
-          if (session.container === "mpegts") {
-            toRead = Math.floor(toRead / TS_PACKET_SIZE) * TS_PACKET_SIZE;
-            if (toRead <= 0) {
-              await sleep(PUMP_POLL_MS);
-              continue;
-            }
-          }
-        }
-
-        const bytesRead = fs.readSync(fd, buf, 0, toRead, offset);
-        if (bytesRead <= 0) {
-          await sleep(PUMP_POLL_MS);
-          continue;
-        }
-
-        offset += bytesRead;
-        const ok = res.write(buf.subarray(0, bytesRead));
-        if (!ok) await waitForDrain(res);
-        continue;
-      }
-
-      if (session.encodeDone) {
-        if (offset < rawSize) {
-          let toRead = Math.min(PUMP_CHUNK, rawSize - offset);
-          if (session.container === "mpegts" && offset % TS_PACKET_SIZE === 0) {
-            toRead = Math.floor(toRead / TS_PACKET_SIZE) * TS_PACKET_SIZE;
-            if (toRead <= 0 && rawSize - offset < TS_PACKET_SIZE) {
-              toRead = rawSize - offset;
-            }
-            if (toRead <= 0) {
-              break;
-            }
-          }
-
-          const bytesRead = fs.readSync(fd, buf, 0, toRead, offset);
-          if (bytesRead > 0) {
-            offset += bytesRead;
-            const ok = res.write(buf.subarray(0, bytesRead));
-            if (!ok) await waitForDrain(res);
-            continue;
-          }
-        }
-
-        break;
-      }
-
-      await sleep(PUMP_POLL_MS);
-    }
-  } finally {
-    if (fd != null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  try {
-    if (!res.writableEnded) res.end();
+    const text = fs.readFileSync(playlistPath, "utf8");
+    return text.includes("#EXTINF");
   } catch {
-    // ignore
+    return false;
   }
-}
-
-function attachReader(session: LiveSession, res: Response, key: string): void {
-  cancelScheduledEnd(session);
-  session.readers.add(res);
-
-  const mode = session.encodeDone
-    ? "finished file"
-    : session.container === "mpegts"
-      ? "growing · paced ~1x · TS-safe"
-      : "growing file";
-
-  if (session.jobId && jobQueue) {
-    jobQueue.logLiveStream(
-      session.jobId,
-      "info",
-      `Client connected (${session.readers.size} reader(s)) · from byte 0 · ${mode}`,
-    );
-  }
-
-  let settled = false;
-  const settle = () => {
-    if (settled) return;
-
-    settled = true;
-    session.readers.delete(res);
-    scheduleEndIfIdle(
-      key,
-      session.encodeDone ? POST_ENCODE_GRACE_MS : DISCONNECT_GRACE_MS,
-    );
-  };
-
-  res.once("close", settle);
-
-  void pumpGrowingFile(session, res).finally(() => {
-    if (!res.writableEnded) {
-      try {
-        res.end();
-      } catch {
-        // ignore
-      }
-    }
-
-    settle();
-  });
 }
 
 async function createLiveSession(
   settings: AppSettings,
   channelNumber: string,
-  container: LivePromoContainer,
   key: string,
 ): Promise<LiveSession> {
-  const contentType = contentTypeFor(container);
   const slice = await ensureChannelScheduleForLive(settings, channelNumber);
   const channelName = slice.channelName;
 
   const job = jobQueue?.beginLiveStream({
     channelNumber,
     channelName,
-    container,
+    container: LIVE_CONTAINER,
   });
 
   const progress = (
@@ -490,9 +184,9 @@ async function createLiveSession(
       progress,
     );
 
-    const workDir = liveWorkDir(settings.cachePath, channelNumber, container);
+    const workDir = liveWorkDir(settings.cachePath, channelNumber);
     fs.mkdirSync(workDir, { recursive: true });
-    const outputPath = path.join(workDir, liveOutputName(container));
+    const outputPath = path.join(workDir, "index.m3u8");
 
     const live = await startLivePromoEncode(
       settings,
@@ -510,7 +204,6 @@ async function createLiveSession(
         cachePath: settings.cachePath,
         onProgress: progress,
       },
-      container,
       outputPath,
     );
 
@@ -519,16 +212,14 @@ async function createLiveSession(
     const session: LiveSession = {
       key,
       channelNumber,
-      container,
       startedAt: Date.now(),
       totalSeconds: live.totalSeconds,
-      readers: new Set(),
       voiceHashes: live.voiceHashes,
       workDir: live.workDir,
       outputPath: live.outputPath,
-      contentType,
       jobId: job?.id,
       encodeDone: false,
+      lastAccessAt: Date.now(),
       childKill: () => {
         try {
           live.process.kill("SIGKILL");
@@ -540,7 +231,7 @@ async function createLiveSession(
 
     sessions.set(key, session);
     progress(
-      `Streaming file-backed · VO ${live.voiceHashes.length > 0 ? "on" : "off"} · ${built.chapters.length} chapter(s) · ${live.totalSeconds}s`,
+      `Live HLS · VO ${live.voiceHashes.length > 0 ? "on" : "off"} · ${built.chapters.length} chapter(s) · ${live.totalSeconds}s`,
     );
 
     const stderrChunks: Buffer[] = [];
@@ -564,7 +255,6 @@ async function createLiveSession(
         session.exitError = `ffmpeg exited ${code}`;
         log.error("live ffmpeg exited", {
           channel: channelNumber,
-          container,
           code,
           stderr: tail,
         });
@@ -584,10 +274,9 @@ async function createLiveSession(
         if (tail) progress(tail.slice(-500), "error");
       } else {
         progress(`Encode finished · encoder OK (${encoderLabel})`);
-        progress("Flushing file to remaining reader(s)");
       }
 
-      scheduleEndIfIdle(key, POST_ENCODE_GRACE_MS);
+      scheduleEndIfIdle(key);
     });
 
     live.process.on("error", (err) => {
@@ -595,18 +284,16 @@ async function createLiveSession(
       session.exitError = err.message;
       log.error("live ffmpeg spawn error", {
         channel: channelNumber,
-        container,
         err: err.message,
       });
 
-      scheduleEndIfIdle(key, DISCONNECT_GRACE_MS);
+      scheduleEndIfIdle(key);
     });
 
     log.info("live session started", {
       channel: channelNumber,
       name: built.channelName,
-      container,
-      file: outputPath,
+      out: outputPath,
       seconds: live.totalSeconds,
       vo: live.voiceHashes.length > 0,
     });
@@ -622,29 +309,19 @@ async function createLiveSession(
   }
 }
 
-/**
- * Attach an HTTP response to a per-channel live promo encode.
- * VO is cache-only (skipped if not warm). One ffmpeg per channel+container
- * writes a growing file; every reader streams that file from byte 0.
- */
-export async function attachLivePromoStream(
+async function ensureSession(
   settings: AppSettings,
   channelNumber: string,
-  res: Response,
-  container: LivePromoContainer = "mpegts",
   retry = false,
-): Promise<void> {
-  const key = sessionKey(channelNumber, container);
+): Promise<LiveSession> {
+  const key = sessionKey(channelNumber);
 
   const existing = sessions.get(key);
-  if (existing) {
-    attachReader(existing, res, key);
-    return;
-  }
+  if (existing) return existing;
 
   let pending = starting.get(key);
   if (!pending) {
-    pending = createLiveSession(settings, channelNumber, container, key);
+    pending = createLiveSession(settings, channelNumber, key);
     starting.set(key, pending);
     void pending.finally(() => {
       if (starting.get(key) === pending) starting.delete(key);
@@ -652,48 +329,143 @@ export async function attachLivePromoStream(
   } else {
     log.info("live session startup in progress — waiting", {
       channel: channelNumber,
-      container,
     });
   }
 
-  try {
-    const session = await pending;
-    if (!sessions.has(key)) {
-      if (retry) {
-        throw new Error("Live session ended before client could attach");
-      }
-
-      return attachLivePromoStream(
-        settings,
-        channelNumber,
-        res,
-        container,
-        true,
-      );
+  const session = await pending;
+  if (!sessions.has(key)) {
+    if (retry) {
+      throw new Error("Live session ended before client could attach");
     }
 
-    attachReader(session, res, key);
-  } catch (err) {
-    if (!res.headersSent) {
-      throw err;
-    }
-
-    try {
-      res.end();
-    } catch {
-      // ignore
-    }
+    return ensureSession(settings, channelNumber, true);
   }
+
+  return session;
+}
+
+/**
+ * Ensure HLS encode is running and return the playlist once it has a segment.
+ */
+export async function serveLiveHlsPlaylist(
+  settings: AppSettings,
+  channelNumber: string,
+  res: Response,
+): Promise<void> {
+  const key = sessionKey(channelNumber);
+  const session = await ensureSession(settings, channelNumber);
+  touchAccess(session);
+
+  if (session.jobId && jobQueue) {
+    jobQueue.logLiveStream(
+      session.jobId,
+      "info",
+      `HLS playlist request · encode ${session.encodeDone ? "done" : "running"}`,
+    );
+  }
+
+  const deadline = Date.now() + 60_000;
+  while (!playlistHasSegment(session.outputPath)) {
+    if (session.exitError) {
+      throw new Error(session.exitError);
+    }
+
+    if (session.encodeDone && !playlistHasSegment(session.outputPath)) {
+      throw new Error("HLS encode finished without a playable playlist");
+    }
+
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for first HLS segment");
+    }
+
+    if (res.writableEnded || res.destroyed) return;
+
+    await sleep(PUMP_POLL_MS);
+  }
+
+  touchAccess(session);
+  res.status(200);
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  res.setHeader("Cache-Control", "no-store");
+  fs.createReadStream(session.outputPath).pipe(res);
+  res.on("close", () => scheduleEndIfIdle(key));
+}
+
+/** Serve one finished HLS segment (`seg000.ts`, …). */
+export async function serveLiveHlsSegment(
+  settings: AppSettings,
+  channelNumber: string,
+  segmentName: string,
+  res: Response,
+): Promise<void> {
+  if (!HLS_SEGMENT_RE.test(segmentName)) {
+    res.status(400).type("text/plain").send("invalid segment");
+    return;
+  }
+
+  const key = sessionKey(channelNumber);
+  const session = await ensureSession(settings, channelNumber);
+  touchAccess(session);
+
+  const segPath = path.join(session.workDir, segmentName);
+  const resolved = path.resolve(segPath);
+  if (!resolved.startsWith(path.resolve(session.workDir) + path.sep)) {
+    res.status(400).end();
+    return;
+  }
+
+  const deadline = Date.now() + 60_000;
+  while (!fs.existsSync(resolved)) {
+    if (session.exitError) {
+      throw new Error(session.exitError);
+    }
+
+    if (session.encodeDone) {
+      res.status(404).type("text/plain").send("segment not found");
+      scheduleEndIfIdle(key);
+      return;
+    }
+
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out waiting for ${segmentName}`);
+    }
+
+    if (res.writableEnded || res.destroyed) return;
+
+    await sleep(PUMP_POLL_MS);
+  }
+
+  // Wait until file size is stable briefly so we don't serve a half-written seg.
+  let lastSize = -1;
+  for (let i = 0; i < 20; i++) {
+    const size = fs.statSync(resolved).size;
+    if (size > 0 && size === lastSize) break;
+
+    lastSize = size;
+    await sleep(25);
+  }
+
+  touchAccess(session);
+  res.status(200);
+  res.setHeader("Content-Type", "video/MP2T");
+  res.setHeader("Cache-Control", "no-store");
+  res.sendFile(resolved, (err) => {
+    if (err && !res.headersSent) {
+      res.status(500).end();
+    }
+
+    scheduleEndIfIdle(key);
+  });
 }
 
 export function livePromoUrl(baseUrl: string, channelNumber: string): string {
   const base = baseUrl.replace(/\/+$/, "");
-  return `${base}/live/${encodeURIComponent(channelNumber)}/promo.ts`;
+  return `${base}/live/${encodeURIComponent(channelNumber)}/promo.m3u8`;
 }
 
-/** Relative URL for Channels page HTML5 preview (fragmented MP4). */
+/** Relative URL for Channels page HLS preview (same as ETV). */
 export function livePreviewPath(channelNumber: string): string {
-  return `/live/${encodeURIComponent(channelNumber)}/preview.mp4`;
+  return `/live/${encodeURIComponent(channelNumber)}/promo.m3u8`;
 }
 
 export function formatPromoDuration(totalSeconds: number): string {

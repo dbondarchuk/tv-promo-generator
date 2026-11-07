@@ -45,7 +45,7 @@ import {
 import { formatStartsAtLabel } from "../voice/templates.js";
 
 function livePreviewPath(channelNumber: string): string {
-  return `/live/${encodeURIComponent(channelNumber)}/preview.mp4`;
+  return `/live/${encodeURIComponent(channelNumber)}/promo.m3u8`;
 }
 
 const log = createLogger("channels");

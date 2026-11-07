@@ -31,7 +31,10 @@ import {
   listErsatzTvBackups,
 } from "./services/etv-backup.js";
 import { JobQueue } from "./services/jobs.js";
-import { attachLivePromoStream } from "./services/livePromo.js";
+import {
+  serveLiveHlsPlaylist,
+  serveLiveHlsSegment,
+} from "./services/livePromo.js";
 import { validateSettings } from "./services/validate-settings.js";
 import { createLogger } from "./util/log.js";
 import {
@@ -575,45 +578,67 @@ export function createMediaRouter(getSettings: () => AppSettings): Router {
   return router;
 }
 
-/** Live streams: MPEG-TS for ETV, fragmented MP4 for browser preview. */
+/** Live HLS streams for ETV and the Channels page preview. */
 export function createLiveRouter(getSettings: () => AppSettings): Router {
   const router = Router();
 
-  async function handleLive(
+  async function handleLiveError(
     channelNumber: string,
+    kind: string,
     res: import("express").Response,
-    container: "mpegts" | "fmp4",
+    err: unknown,
   ): Promise<void> {
-    const settings = getSettings();
-    log.info("live promo open", { channelNumber, container });
-
-    try {
-      await attachLivePromoStream(settings, channelNumber, res, container);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error("live promo failed", { channelNumber, container, message });
-      if (!res.headersSent) {
-        res.status(503).type("text/plain").send(message);
-      } else {
-        try {
-          res.end();
-        } catch {
-          // ignore
-        }
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("live promo failed", { channelNumber, kind, message });
+    if (!res.headersSent) {
+      res.status(503).type("text/plain").send(message);
+    } else {
+      try {
+        res.end();
+      } catch {
+        // ignore
       }
     }
   }
 
-  router.get("/:channelNumber/promo.ts", async (req, res) => {
-    await handleLive(
-      decodeURIComponent(req.params.channelNumber),
-      res,
-      "mpegts",
-    );
+  /** Legacy YAML pointed at promo.ts — send clients to the HLS playlist. */
+  router.get("/:channelNumber/promo.ts", (req, res) => {
+    const channelNumber = decodeURIComponent(req.params.channelNumber);
+    res.redirect(302, `/live/${encodeURIComponent(channelNumber)}/promo.m3u8`);
   });
 
-  router.get("/:channelNumber/preview.mp4", async (req, res) => {
-    await handleLive(decodeURIComponent(req.params.channelNumber), res, "fmp4");
+  router.get("/:channelNumber/promo.m3u8", async (req, res) => {
+    const channelNumber = decodeURIComponent(req.params.channelNumber);
+    const settings = getSettings();
+    log.info("live promo open", { channelNumber, container: "hls" });
+
+    try {
+      await serveLiveHlsPlaylist(settings, channelNumber, res);
+    } catch (err) {
+      await handleLiveError(channelNumber, "hls-playlist", res, err);
+    }
+  });
+
+  router.get("/:channelNumber/:segment", async (req, res, next) => {
+    const segment = req.params.segment;
+    if (!/^seg\d{3}\.ts$/i.test(segment)) {
+      next();
+      return;
+    }
+
+    const channelNumber = decodeURIComponent(req.params.channelNumber);
+    const settings = getSettings();
+
+    try {
+      await serveLiveHlsSegment(
+        settings,
+        channelNumber,
+        segment.toLowerCase(),
+        res,
+      );
+    } catch (err) {
+      await handleLiveError(channelNumber, "hls-segment", res, err);
+    }
   });
 
   return router;

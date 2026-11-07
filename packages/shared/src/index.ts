@@ -278,8 +278,8 @@ export interface ChannelView {
   /** Baked MP4 URL for download/legacy preview, if present. */
   promoUrl?: string;
   /**
-   * Live fragmented-MP4 preview for the Channels page
-   * (`/live/{number}/preview.mp4`). Prefer this over promoUrl in the UI.
+   * Live HLS playlist for the Channels page (same path ETV uses:
+   * `/live/{number}/promo.m3u8`). Prefer this over promoUrl in the UI.
    */
   livePromoUrl?: string;
   lastError?: string;

@@ -193,7 +193,7 @@ Use **Validate settings** to check paths, DB, ffmpeg, and API connectivity. **Re
 
 1. **Settings** — configure ErsatzTV + paths, then Validate / Save.
 2. **Channels** — list from ErsatzTV; toggle **enabled**; optional per-channel language and color.
-3. **Preview live** — on-demand MPEG-TS/fMP4 encode of the current next-up set.
+3. **Preview live** — on-demand HLS encode of the current next-up set (same path as ETV).
 4. **Warm VO** / **Warm VO all** — pre-synthesize voice (when voice-over is enabled); the scheduler also warms VO when a new primary starts.
 5. **Push to ErsatzTV** — choose filler slots (pre / middle / post / tail) and cleanup options.
 6. **Rollback DB** — restore the last pre-push SQLite backup if needed.
@@ -217,13 +217,15 @@ Per-channel language drives overlays and VO templates (e.g. `uk` → Ukrainian).
 When **Promo delivery** is Remote Stream, ErsatzTV fillers point at this app:
 
 ```yml
-url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.ts"
+url: "http://tv-promo-generator:5174/live/{channelNumber}/promo.m3u8"
 is_live: true
 duration: "00:00:30"
 title: "Promo Generator - Next - {channel name}"
 ```
 
-When ETV opens the URL, this app live-encodes the current “next up” set as **MPEG-TS** over HTTP. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
+Live encode writes short HLS segments at full speed; ETV pulls finished `segNNN.ts` parts (avoids torn video from a growing single `.ts`). 
+
+When ETV opens the URL, this app live-encodes the current “next up” set as **HLS** over HTTP. Voice-over is pre-warmed in the background; if VO is not cached yet, the stream still starts **without VO** (never blocks air on TTS).
 
 ### VO prewarm + cache
 
