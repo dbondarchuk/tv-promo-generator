@@ -3,6 +3,7 @@ import type {
   EtvBackupInfo,
   FillerPlacement,
   JobInfo,
+  PromoDeliveryMode,
 } from "@promo/shared";
 import {
   CHANNEL_LANGUAGES,
@@ -58,9 +59,14 @@ export function ChannelsPage() {
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [promoDeliveryMode, setPromoDeliveryMode] =
+    useState<PromoDeliveryMode>("remote-stream");
+
   const [streamStatus, setStreamStatus] = useState<
     "connecting" | "live" | "reconnecting"
   >("connecting");
+
+  const fileMode = promoDeliveryMode === "file";
 
   const [busy, setBusy] = useState(false);
   const [latestPushBackup, setLatestPushBackup] =
@@ -117,6 +123,35 @@ export function ChannelsPage() {
     return map;
   }, [jobs]);
 
+  const generateBadgeByChannel = useMemo(() => {
+    const map = new Map<string, "running" | "queued">();
+    for (const job of jobs) {
+      if (job.kind !== "generate") continue;
+
+      if (job.status === "running" || job.status === "late") {
+        map.set(job.channelNumber, "running");
+      } else if (
+        job.status === "queued" &&
+        map.get(job.channelNumber) !== "running"
+      ) {
+        map.set(job.channelNumber, "queued");
+      }
+    }
+
+    return map;
+  }, [jobs]);
+
+  const liveStreamByChannel = useMemo(() => {
+    const set = new Set<string>();
+    for (const job of jobs) {
+      if (job.kind === "live-stream" && job.status === "running") {
+        set.add(job.channelNumber);
+      }
+    }
+
+    return set;
+  }, [jobs]);
+
   const refreshChannels = useCallback(async () => {
     try {
       const chs = await api.getChannels();
@@ -124,6 +159,19 @@ export function ChannelsPage() {
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const refreshSchedule = useCallback(async () => {
+    setBusy(true);
+    try {
+      const chs = await api.refreshChannels();
+      setChannels(chs);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
   }, []);
 
@@ -142,6 +190,7 @@ export function ChannelsPage() {
       .then((status) => {
         setConfigured(status.configured);
         setVoiceEnabled(status.voiceEnabled !== false);
+        setPromoDeliveryMode(status.promoDeliveryMode ?? "remote-stream");
       })
       .catch(() => setConfigured(false));
   }, []);
@@ -229,6 +278,30 @@ export function ChannelsPage() {
       el.scrollTop = el.scrollHeight;
     }
   }, [jobs, expandedJobId]);
+
+  async function generateAll() {
+    setBusy(true);
+    try {
+      await api.generateAll();
+      await refreshChannels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateOne(number: string) {
+    setBusy(true);
+    try {
+      await api.generateOne(number);
+      await refreshChannels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function voPrewarmAll() {
     setBusy(true);
@@ -464,25 +537,54 @@ export function ChannelsPage() {
           <div>
             <h1>Channels</h1>
             <p className="muted">
-              Live preview, warm voice-over ahead of fillers, and push to
-              ErsatzTV.
+              {fileMode
+                ? "Bake MP4 promos, push as Other Video fillers to ErsatzTV."
+                : "Live preview, warm voice-over ahead of fillers, and push Remote Streams."}
             </p>
           </div>
           <div className="row">
             <button
               className="secondary"
               disabled={busy}
-              onClick={() => void refreshChannels()}
+              title="Reload playout from ErsatzTV (bypasses 1-minute cache)"
+              onClick={() => void refreshSchedule()}
             >
-              Refresh
+              Refresh schedule
             </button>
-            {voiceEnabled && (
+            {fileMode && (
+              <button
+                disabled={busy || exclusiveActive}
+                title={
+                  exclusiveActive
+                    ? "Paused while push/rollback is running"
+                    : "Bake next-items.mp4 for enabled channels"
+                }
+                onClick={() => void generateAll()}
+              >
+                Generate all
+              </button>
+            )}
+            {voiceEnabled && !fileMode && (
               <button
                 disabled={busy || exclusiveActive}
                 title={
                   exclusiveActive
                     ? "Paused while push/rollback is running"
                     : "Pre-synthesize voice for enabled channels"
+                }
+                onClick={() => void voPrewarmAll()}
+              >
+                Warm VO all
+              </button>
+            )}
+            {voiceEnabled && fileMode && (
+              <button
+                className="secondary"
+                disabled={busy || exclusiveActive}
+                title={
+                  exclusiveActive
+                    ? "Paused while push/rollback is running"
+                    : "Pre-synthesize voice (optional; also baked into Generate)"
                 }
                 onClick={() => void voPrewarmAll()}
               >
@@ -554,9 +656,11 @@ export function ChannelsPage() {
                 ? "push"
                 : kind === "rollback"
                   ? "rollback"
-                  : kind === "vo-prewarm"
-                    ? "gen"
-                    : "gen";
+                  : kind === "live-stream"
+                    ? "live"
+                    : kind === "vo-prewarm"
+                      ? "gen"
+                      : "gen";
 
             return (
               <div
@@ -571,7 +675,7 @@ export function ChannelsPage() {
                   <span>
                     <span className={`badge ${kindClass}`}>{kind}</span>{" "}
                     <strong>{j.channelName}</strong>
-                    {kind === "vo-prewarm" && (
+                    {(kind === "vo-prewarm" || kind === "live-stream") && (
                       <span className="muted"> #{j.channelNumber}</span>
                     )}
                   </span>
@@ -748,7 +852,13 @@ export function ChannelsPage() {
 
               <div className="flex-1" />
 
-              {ch.livePromoUrl && ch.enabled && ch.nextItems.length > 0 ? (
+              {fileMode && ch.promoExists && ch.promoUrl ? (
+                <video
+                  key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
+                  controls
+                  src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
+                />
+              ) : ch.livePromoUrl && ch.enabled && ch.nextItems.length > 0 ? (
                 <LivePromoPreview
                   src={ch.livePromoUrl}
                   channelLabel={ch.name}
@@ -762,15 +872,31 @@ export function ChannelsPage() {
               ) : (
                 <div className="muted">
                   {ch.enabled
-                    ? "No upcoming items to preview."
-                    : "Enable channel to preview live promo."}
+                    ? fileMode
+                      ? "No baked promo yet — Generate to create next-items.mp4."
+                      : "No upcoming items to preview."
+                    : "Enable channel to preview promo."}
                 </div>
               )}
               {ch.lastError && <div className="error">{ch.lastError}</div>}
 
               <div className="row">
+                {fileMode && (
+                  <button
+                    disabled={busy || exclusiveActive || !ch.enabled}
+                    title={
+                      exclusiveActive
+                        ? "Paused while push/rollback is running"
+                        : "Bake next-items.mp4 for this channel"
+                    }
+                    onClick={() => void generateOne(ch.number)}
+                  >
+                    Generate
+                  </button>
+                )}
                 {voiceEnabled && (
                   <button
+                    className={fileMode ? "secondary" : undefined}
                     disabled={busy || exclusiveActive || !ch.enabled}
                     title={
                       exclusiveActive
@@ -781,6 +907,15 @@ export function ChannelsPage() {
                   >
                     Warm VO
                   </button>
+                )}
+                {generateBadgeByChannel.get(ch.number) === "running" && (
+                  <span className="badge warn">generating</span>
+                )}
+                {generateBadgeByChannel.get(ch.number) === "queued" && (
+                  <span className="badge">generate queued</span>
+                )}
+                {liveStreamByChannel.has(ch.number) && (
+                  <span className="badge live">live stream</span>
                 )}
                 {voJobBadgeByChannel.get(ch.number) === "warming" && (
                   <span className="badge warn">warming VO</span>

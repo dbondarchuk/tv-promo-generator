@@ -145,29 +145,74 @@ export async function validateSettings(
     }
   }
 
+  const remoteMode = settings.promoDeliveryMode !== "file";
+
   checks.push(dirStatus(settings.libraryPath, "Library path", false));
-  checks.push(dirStatus(settings.outputPath, "Output path (YAML write)", true));
+  checks.push(
+    dirStatus(
+      settings.outputPath,
+      remoteMode ? "Output path (YAML write)" : "Output path (MP4 write)",
+      true,
+    ),
+  );
 
   checks.push(dirStatus(settings.cachePath, "Cache path", true));
   checks.push(
     dirStatus(
       settings.etvLibraryPath || settings.outputPath,
-      "ETV library path (Remote Streams)",
+      remoteMode
+        ? "ETV library path (Remote Streams)"
+        : "ETV library path (Other Videos)",
       true,
     ),
   );
 
+  checks.push(
+    check(
+      "promoDeliveryMode",
+      "Promo delivery",
+      settings.promoDeliveryMode === "file" ||
+        settings.promoDeliveryMode === "remote-stream",
+      settings.promoDeliveryMode === "file"
+        ? "File (baked MP4)"
+        : "Remote Stream (live encode)",
+    ),
+  );
+
   const onDemand = settings.etvOnDemandBaseUrl?.trim();
-  if (!onDemand) {
-    checks.push(
-      check(
-        "etvOnDemandBaseUrl",
-        "On-demand base URL",
-        true,
-        "Empty — required before Push wires live Remote Streams",
-      ),
-    );
-  } else {
+  if (remoteMode) {
+    if (!onDemand) {
+      checks.push(
+        check(
+          "etvOnDemandBaseUrl",
+          "On-demand base URL",
+          false,
+          "Required for Remote Stream delivery",
+        ),
+      );
+    } else {
+      try {
+        const u = new URL(onDemand);
+        checks.push(
+          check(
+            "etvOnDemandBaseUrl",
+            "On-demand base URL",
+            ["http:", "https:"].includes(u.protocol),
+            u.toString(),
+          ),
+        );
+      } catch {
+        checks.push(
+          check(
+            "etvOnDemandBaseUrl",
+            "On-demand base URL",
+            false,
+            "Invalid URL",
+          ),
+        );
+      }
+    }
+  } else if (onDemand) {
     try {
       const u = new URL(onDemand);
       checks.push(
@@ -175,12 +220,17 @@ export async function validateSettings(
           "etvOnDemandBaseUrl",
           "On-demand base URL",
           ["http:", "https:"].includes(u.protocol),
-          u.toString(),
+          `${u.toString()} (unused in file mode)`,
         ),
       );
     } catch {
       checks.push(
-        check("etvOnDemandBaseUrl", "On-demand base URL", false, "Invalid URL"),
+        check(
+          "etvOnDemandBaseUrl",
+          "On-demand base URL",
+          true,
+          "Invalid URL (unused in file mode)",
+        ),
       );
     }
   }

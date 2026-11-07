@@ -3,6 +3,7 @@ import type {
   ChannelView,
   EtvBackupInfo,
   JobInfo,
+  PromoDeliveryMode,
   PushOptions,
   ValidateSettingsResult,
 } from "@promo/shared";
@@ -24,9 +25,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   getSettings: () => request<AppSettings>("/api/settings"),
   getSettingsStatus: () =>
-    request<{ configured: boolean; voiceEnabled?: boolean }>(
-      "/api/settings/status",
-    ),
+    request<{
+      configured: boolean;
+      voiceEnabled?: boolean;
+      promoDeliveryMode?: PromoDeliveryMode;
+    }>("/api/settings/status"),
   saveSettings: (settings: AppSettings) =>
     request<AppSettings>("/api/settings", {
       method: "PUT",
@@ -40,10 +43,26 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   getChannels: () => request<ChannelView[]>("/api/channels"),
+  /** Force-refresh schedule snapshot (bypasses 1-minute server cache). */
+  refreshChannels: () =>
+    request<ChannelView[]>("/api/channels/refresh", {
+      method: "POST",
+      body: "{}",
+    }),
   patchChannel: (number: string, patch: Record<string, unknown>) =>
     request(`/api/channels/${encodeURIComponent(number)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    }),
+  generateAll: () =>
+    request<{ jobs: JobInfo[] }>("/api/generate", {
+      method: "POST",
+      body: "{}",
+    }),
+  generateOne: (number: string) =>
+    request<{ job: JobInfo }>(`/api/generate/${encodeURIComponent(number)}`, {
+      method: "POST",
+      body: "{}",
     }),
   voPrewarmAll: () =>
     request<{ jobs: JobInfo[] }>("/api/vo-prewarm", {

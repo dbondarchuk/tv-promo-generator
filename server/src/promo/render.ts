@@ -782,6 +782,7 @@ function buildPromoFfmpegArgs(
   );
 
   if (output.kind === "mpegts-pipe") {
+    // Periodic PAT/PMT so ETV reconnects / late joiners can lock onto the stream.
     args.push(
       "-f",
       "mpegts",
@@ -791,6 +792,12 @@ function buildPromoFfmpegArgs(
       "0",
       "-flush_packets",
       "1",
+      "-pat_period",
+      "0.1",
+      "-sdt_period",
+      "0.5",
+      "-mpegts_flags",
+      "+resend_headers",
       "pipe:1",
     );
   } else if (output.kind === "fmp4-pipe") {

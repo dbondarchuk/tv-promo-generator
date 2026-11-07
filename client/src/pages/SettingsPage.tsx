@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   HardwareAcceleration,
+  PromoDeliveryMode,
   PromoItemCount,
   ShowVoiceDetail,
   VaapiDriver,
@@ -10,6 +11,8 @@ import type {
 } from "@promo/shared";
 import {
   CHANNEL_LANGUAGES,
+  PROMO_DELIVERY_MODE_LABELS,
+  PROMO_DELIVERY_MODES,
   PROMO_ITEM_COUNTS,
   SHOW_VOICE_DETAIL_LABELS,
   SHOW_VOICE_DETAILS,
@@ -172,9 +175,31 @@ export function SettingsPage() {
           {field("etvDatabase", "ersatztv.sqlite3 path")}
           {field("libraryPath", "Library path (local mount)")}
           {field("etvPathPrefix", "ErsatzTV path prefix to rewrite")}
+          <label>
+            Promo delivery
+            <select
+              value={settings.promoDeliveryMode ?? "remote-stream"}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  promoDeliveryMode: e.target.value as PromoDeliveryMode,
+                });
+
+                setValidation(null);
+              }}
+            >
+              {PROMO_DELIVERY_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {PROMO_DELIVERY_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </label>
           {field(
             "outputPath",
-            "Output path (this app writes YAML here)",
+            settings.promoDeliveryMode === "file"
+              ? "Output path (this app writes MP4 here)"
+              : "Output path (this app writes YAML here)",
             "text",
             "/data/output",
           )}
@@ -184,22 +209,34 @@ export function SettingsPage() {
             "text",
             "/media/videos/promos",
           )}
-          {field(
-            "etvOnDemandBaseUrl",
-            "On-demand base URL (this app, as ETV reaches it)",
-            "text",
-            "http://tv-promo-generator:5174",
-          )}
+          {settings.promoDeliveryMode !== "file" &&
+            field(
+              "etvOnDemandBaseUrl",
+              "On-demand base URL (this app, as ETV reaches it)",
+              "text",
+              "http://tv-promo-generator:5174",
+            )}
           {field("regenLeadMinutes", "Regen lead time (minutes)", "number")}
           {field("timeZone", "Display timezone (IANA, e.g. America/New_York)")}
         </div>
         <p className="muted">
-          Push writes <code>next-items.yml</code> under{" "}
-          <strong>Output path</strong> and registers a Remote Streams library at{" "}
-          <strong>ErsatzTV library path</strong> (same host folder, ETV’s
-          mount). On-demand base URL example:{" "}
-          <code>http://tv-promo-generator:5174</code> → live{" "}
-          <code>/live/{"{channel}"}/promo.ts</code>.
+          {settings.promoDeliveryMode === "file" ? (
+            <>
+              <strong>File</strong> mode bakes <code>next-items.mp4</code> under{" "}
+              <strong>Output path</strong> and Push registers an Other Videos
+              library at <strong>ErsatzTV library path</strong>. Generate on the
+              Channels page (or the scheduler) before Push.
+            </>
+          ) : (
+            <>
+              <strong>Remote Stream</strong> mode writes{" "}
+              <code>next-items.yml</code> under <strong>Output path</strong> and
+              registers a Remote Streams library at{" "}
+              <strong>ErsatzTV library path</strong>. On-demand base URL
+              example: <code>http://tv-promo-generator:5174</code> → live{" "}
+              <code>/live/{"{channel}"}/promo.ts</code>.
+            </>
+          )}
         </p>
       </section>
 

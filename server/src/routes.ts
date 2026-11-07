@@ -23,6 +23,7 @@ import { parseM3u } from "./ersatztv/m3u.js";
 import {
   invalidateChannelCaches,
   loadChannelViews,
+  refreshChannelViews,
 } from "./services/channels.js";
 import {
   backupErsatzTvDatabase,
@@ -76,6 +77,7 @@ export function createRouter(opts: {
     res.json({
       configured: isAppConfigured(settings),
       voiceEnabled: Boolean(settings.voiceEnabled),
+      promoDeliveryMode: settings.promoDeliveryMode ?? "remote-stream",
     });
   });
 
@@ -222,6 +224,30 @@ export function createRouter(opts: {
     }
   });
 
+  /** Bust the 1-minute schedule snapshot and reload from ErsatzTV. */
+  router.post("/channels/refresh", async (_req, res) => {
+    try {
+      const settings = opts.getSettings();
+      const channels = await refreshChannelViews(settings);
+      const enriched = channels.map((c) => ({
+        ...c,
+        lastGeneratedAt: opts.jobs.getLastGenerated(c.number),
+        lastError: c.lastError ?? opts.jobs.getLastError(c.number),
+      }));
+
+      res.json(enriched);
+    } catch (err) {
+      log.error(
+        "POST /channels/refresh failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.patch("/channels/:number", (req, res) => {
     const overrides = updateChannelOverride(req.params.number, req.body ?? {});
     res.json(overrides[req.params.number]);
@@ -231,7 +257,77 @@ export function createRouter(opts: {
     res.json(loadChannelOverrides());
   });
 
-  /** Manual VO prewarm (live video encodes on demand; MP4 generate removed from UI). */
+  /** Bake next-items.mp4 (file delivery mode). */
+  router.post("/generate", async (req, res) => {
+    try {
+      const settings = opts.getSettings();
+      const channels = await loadChannelViews(settings);
+      const numbers: string[] | undefined = req.body?.channelNumbers;
+      const selected = numbers?.length
+        ? channels.filter((c) => numbers.includes(c.number))
+        : channels.filter((c) => c.enabled);
+
+      log.info("enqueue generate", {
+        count: selected.length,
+        numbers: selected.map((c) => c.number),
+      });
+
+      const jobs = selected.map((c) =>
+        opts.jobs.enqueue({
+          channelNumber: c.number,
+          channelName: c.name,
+          preferFront: true,
+        }),
+      );
+
+      res.json({ jobs });
+    } catch (err) {
+      log.error(
+        "POST /generate failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/generate/:number", async (req, res) => {
+    try {
+      const settings = opts.getSettings();
+      const channels = await loadChannelViews(settings);
+      const channel = channels.find((c) => c.number === req.params.number);
+      if (!channel) {
+        res.status(404).json({ error: "Channel not found" });
+        return;
+      }
+
+      log.info("enqueue generate one", {
+        number: channel.number,
+        name: channel.name,
+      });
+
+      const job = opts.jobs.enqueue({
+        channelNumber: channel.number,
+        channelName: channel.name,
+        preferFront: true,
+      });
+
+      res.json({ job });
+    } catch (err) {
+      log.error(
+        "POST /generate/:number failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  /** Manual VO prewarm (remote-stream delivery; optional in file mode). */
   router.post("/vo-prewarm", async (req, res) => {
     try {
       const settings = opts.getSettings();

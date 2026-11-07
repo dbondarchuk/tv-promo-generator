@@ -57,6 +57,24 @@ export function isPromoItemCount(value: unknown): value is PromoItemCount {
   return value === 1 || value === 2 || value === 3;
 }
 
+/** How promos are delivered to ErsatzTV fillers. */
+export const PROMO_DELIVERY_MODES = ["file", "remote-stream"] as const;
+export type PromoDeliveryMode = (typeof PROMO_DELIVERY_MODES)[number];
+
+export const PROMO_DELIVERY_MODE_LABELS: Record<PromoDeliveryMode, string> = {
+  file: "File (baked MP4)",
+  "remote-stream": "Remote Stream (live encode)",
+};
+
+export function isPromoDeliveryMode(
+  value: unknown,
+): value is PromoDeliveryMode {
+  return (
+    typeof value === "string" &&
+    (PROMO_DELIVERY_MODES as readonly string[]).includes(value)
+  );
+}
+
 export interface AppSettings {
   etvUrl: string;
   etvApiKey: string;
@@ -70,6 +88,11 @@ export interface AppSettings {
    * (e.g. http://tv-promo-generator:5174). Used in Remote Stream YAML.
    */
   etvOnDemandBaseUrl: string;
+  /**
+   * `file` — bake next-items.mp4 and push as Other Video.
+   * `remote-stream` — write YAML + live MPEG-TS on play.
+   */
+  promoDeliveryMode: PromoDeliveryMode;
   cachePath: string;
   configPath: string;
   port: number;
@@ -170,7 +193,8 @@ export const CHANNEL_LANGUAGES = [
 
 export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]["code"];
 
-export type JobKind = "generate" | "vo-prewarm" | "push" | "rollback";
+export type JobKind =
+  "generate" | "vo-prewarm" | "push" | "rollback" | "live-stream";
 
 export type JobLogLevel = "info" | "warn" | "error";
 
@@ -312,6 +336,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   outputPath: "./output",
   etvLibraryPath: "",
   etvOnDemandBaseUrl: "",
+  promoDeliveryMode: "remote-stream",
   cachePath: "./cache",
   configPath: "./config",
   port: 5174,

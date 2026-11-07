@@ -2,6 +2,7 @@ import {
   AppSettings,
   ChannelOverrides,
   DEFAULT_SETTINGS,
+  isPromoDeliveryMode,
   isPromoItemCount,
   isShowVoiceDetail,
   isVoiceProvider,
@@ -222,6 +223,10 @@ function normalizeSettings(
 
   if (typeof merged.etvOnDemandBaseUrl !== "string") {
     merged.etvOnDemandBaseUrl = DEFAULT_SETTINGS.etvOnDemandBaseUrl;
+  }
+
+  if (!isPromoDeliveryMode(merged.promoDeliveryMode)) {
+    merged.promoDeliveryMode = DEFAULT_SETTINGS.promoDeliveryMode;
   }
 
   return merged;

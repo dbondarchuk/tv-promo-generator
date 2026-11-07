@@ -9,6 +9,7 @@ import { loadEnv } from "./env.js";
 import { assertFfmpegAvailable } from "./ffmpeg/binaries.js";
 import { createLiveRouter, createMediaRouter, createRouter } from "./routes.js";
 import { JobQueue } from "./services/jobs.js";
+import { setLivePromoJobs } from "./services/livePromo.js";
 import { RegenScheduler } from "./services/scheduler.js";
 import { createLogger } from "./util/log.js";
 
@@ -31,6 +32,7 @@ try {
 }
 
 const jobs = new JobQueue(() => settings);
+setLivePromoJobs(jobs);
 const scheduler = new RegenScheduler(() => settings, jobs);
 
 const app = express();

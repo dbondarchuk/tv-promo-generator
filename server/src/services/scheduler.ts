@@ -12,9 +12,9 @@ import { JobQueue } from "./jobs.js";
 const log = createLogger("scheduler");
 
 /**
- * On each new current primary, enqueue VO prewarm for that channel
- * (current next-N window + look-ahead). Does not bake MP4 for air —
- * live MPEG-TS handles playback.
+ * On each new current primary:
+ * - file mode → enqueue generate (bake MP4)
+ * - remote-stream → enqueue VO prewarm (live encode on play)
  */
 export class RegenScheduler {
   private timer?: NodeJS.Timeout;
@@ -52,8 +52,9 @@ export class RegenScheduler {
       const settings = this.settingsProvider();
       if (!settings.etvDatabase) return;
 
-      if (!settings.voiceEnabled) {
-        log.debug("scheduler skip (voice disabled)");
+      const fileMode = settings.promoDeliveryMode === "file";
+      if (!fileMode && !settings.voiceEnabled) {
+        log.debug("scheduler skip (voice disabled, remote-stream mode)");
         return;
       }
 
@@ -73,7 +74,10 @@ export class RegenScheduler {
         const now = new Date();
         const overrides = loadChannelOverrides();
         const channels = listChannelNumbers(db);
-        log.debug("scheduler scanning channels", { count: channels.length });
+        log.debug("scheduler scanning channels", {
+          count: channels.length,
+          mode: fileMode ? "file" : "remote-stream",
+        });
 
         for (const channel of channels) {
           if (overrides[channel.number]?.enabled === false) continue;
@@ -93,6 +97,31 @@ export class RegenScheduler {
           }
 
           this.lastCurrentKey.set(channel.number, currentKey);
+
+          if (fileMode) {
+            if (this.jobs.hasPendingGenerate(channel.number)) {
+              log.debug("scheduler skip generate (already pending)", {
+                channel: channel.name,
+                number: channel.number,
+              });
+
+              continue;
+            }
+
+            log.info("scheduler enqueue generate (new current item)", {
+              channel: channel.name,
+              number: channel.number,
+              currentKey,
+            });
+
+            this.jobs.enqueue({
+              channelNumber: channel.number,
+              channelName: channel.name,
+            });
+
+            enqueued += 1;
+            continue;
+          }
 
           if (this.jobs.hasPendingVoPrewarm(channel.number)) {
             log.debug("scheduler skip VO (already pending)", {

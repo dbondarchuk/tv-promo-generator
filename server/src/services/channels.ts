@@ -198,13 +198,44 @@ interface GuideCache {
   languageByNumber: Map<string, string>;
 }
 
+interface LabeledPlayout {
+  row: PlayoutRow;
+  start: Date;
+  finish: Date;
+  title: string;
+  episodeTitle?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+}
+
+/** Shared schedule slice — reused by UI, VO prewarm, and live encode. */
+export interface ChannelScheduleSlice {
+  channelNumber: string;
+  channelName: string;
+  tvgId: string;
+  /** Upstream M3U logo URL (not the proxied path). */
+  upstreamLogoUrl?: string;
+  language: string;
+  color: string;
+  current?: LabeledPlayout;
+  currentKey?: string;
+  /** Current window + one look-ahead row (`promoItemCount + 1`). */
+  next: LabeledPlayout[];
+}
+
 let guideCache: GuideCache | null = null;
 let viewsCache: { at: number; key: string; views: ChannelView[] } | null = null;
-const GUIDE_TTL_MS = 30_000;
-const VIEWS_TTL_MS = 10_000;
+let scheduleCache: {
+  at: number;
+  key: string;
+  byNumber: Map<string, ChannelScheduleSlice>;
+} | null = null;
+
+/** Guide + playout snapshot TTL — force-refresh via refreshChannelViews. */
+const SCHEDULE_TTL_MS = 60_000;
 
 async function loadGuide(settings: AppSettings): Promise<GuideCache> {
-  if (guideCache && Date.now() - guideCache.at < GUIDE_TTL_MS) {
+  if (guideCache && Date.now() - guideCache.at < SCHEDULE_TTL_MS) {
     log.debug("guide cache hit");
     return guideCache;
   }
@@ -258,17 +289,32 @@ function settingsCacheKey(settings: AppSettings): string {
   ].join("|");
 }
 
+function scheduleCacheFresh(cacheKey: string): boolean {
+  return Boolean(
+    scheduleCache &&
+    scheduleCache.key === cacheKey &&
+    Date.now() - scheduleCache.at < SCHEDULE_TTL_MS,
+  );
+}
+
+function viewsCacheFresh(cacheKey: string): boolean {
+  return Boolean(
+    viewsCache &&
+    viewsCache.key === cacheKey &&
+    Date.now() - viewsCache.at < SCHEDULE_TTL_MS,
+  );
+}
+
 export async function loadChannelViews(
   settings: AppSettings,
 ): Promise<ChannelView[]> {
   const cacheKey = settingsCacheKey(settings);
-  if (
-    viewsCache &&
-    viewsCache.key === cacheKey &&
-    Date.now() - viewsCache.at < VIEWS_TTL_MS
-  ) {
-    log.debug("channel views cache hit", { channels: viewsCache.views.length });
-    return viewsCache.views;
+  if (viewsCacheFresh(cacheKey)) {
+    log.debug("channel views cache hit", {
+      channels: viewsCache!.views.length,
+    });
+
+    return viewsCache!.views;
   }
 
   log.info("building channel views", {
@@ -280,6 +326,8 @@ export async function loadChannelViews(
   const started = Date.now();
   const { m3u, guide, languageByNumber } = await loadGuide(settings);
   const overrides = loadChannelOverrides();
+  const itemCount = settings.promoItemCount ?? 3;
+  const byNumber = new Map<string, ChannelScheduleSlice>();
 
   let db;
   try {
@@ -295,14 +343,27 @@ export async function loadChannelViews(
     for (const ch of m3u) {
       const override = overrides[ch.number];
       const color = override?.color ?? "#1a468d";
+      const language =
+        override?.language || languageByNumber.get(ch.number) || "en";
+
       const out = promoOutputFile(settings.outputPath, ch.name);
       const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
+      byNumber.set(ch.number, {
+        channelNumber: ch.number,
+        channelName: ch.name,
+        tvgId: ch.tvgId,
+        upstreamLogoUrl: ch.logoUrl,
+        language,
+        color,
+        next: [],
+      });
+
       views.push({
         number: ch.number,
         name: ch.name,
         tvgId: ch.tvgId,
         logoUrl,
-        language: override?.language || languageByNumber.get(ch.number) || "en",
+        language,
         color,
         colorLocked: Boolean(override?.colorLocked),
         enabled: override?.enabled ?? true,
@@ -316,7 +377,9 @@ export async function loadChannelViews(
       });
     }
 
-    viewsCache = { at: Date.now(), key: cacheKey, views };
+    const at = Date.now();
+    scheduleCache = { at, key: cacheKey, byNumber };
+    viewsCache = { at, key: cacheKey, views };
     return views;
   }
 
@@ -354,25 +417,54 @@ export async function loadChannelViews(
 
       const current = getCurrentPrimaryItem(db, ch.number, toUtcSqlite(now));
       const afterIso = current ? current.finish : toUtcSqlite(now);
+      // +1 look-ahead for VO; UI shows only promoItemCount.
       const nextRows = getPrimaryItemsAfter(
         db,
         ch.number,
         afterIso,
-        settings.promoItemCount ?? 3,
+        itemCount + 1,
       );
 
-      const nextItems: ScheduleItemPreview[] = [];
+      const labeledNext: LabeledPlayout[] = [];
       for (const row of nextRows) {
         const start = fromSqliteUtc(row.start);
         const finish = fromSqliteUtc(row.finish);
         const prog = matchProgramme(guide.programmes, ch.tvgId, start);
         const labels = resolveItemLabels(db, row, prog);
+        labeledNext.push({ row, start, finish, ...labels });
+      }
+
+      let labeledCurrent: LabeledPlayout | undefined;
+      if (current) {
+        const start = fromSqliteUtc(current.start);
+        const finish = fromSqliteUtc(current.finish);
+        const prog = matchProgramme(guide.programmes, ch.tvgId, start);
+        const labels = resolveItemLabels(db, current, prog);
+        labeledCurrent = { row: current, start, finish, ...labels };
+      }
+
+      byNumber.set(ch.number, {
+        channelNumber: ch.number,
+        channelName: ch.name,
+        tvgId: ch.tvgId,
+        upstreamLogoUrl: ch.logoUrl,
+        language,
+        color,
+        current: labeledCurrent,
+        currentKey: current
+          ? `${current.mediaItemId}@${current.start}`
+          : undefined,
+        next: labeledNext,
+      });
+
+      const nextItems: ScheduleItemPreview[] = [];
+      for (const item of labeledNext.slice(0, itemCount)) {
         const resolved = await resolveFile(
           settings,
-          row,
-          labels.title,
-          labels.seasonNumber,
-          labels.episodeNumber,
+          item.row,
+          item.title,
+          item.seasonNumber,
+          item.episodeNumber,
           {
             allowLibraryScan: false,
             allowProbe: false,
@@ -380,35 +472,30 @@ export async function loadChannelViews(
         );
 
         nextItems.push({
-          mediaItemId: row.mediaItemId,
-          title: labels.title,
-          episodeTitle: labels.episodeTitle,
-          seasonNumber: labels.seasonNumber,
-          episodeNumber: labels.episodeNumber,
-          start: start.toISOString(),
-          finish: finish.toISOString(),
+          mediaItemId: item.row.mediaItemId,
+          title: item.title,
+          episodeTitle: item.episodeTitle,
+          seasonNumber: item.seasonNumber,
+          episodeNumber: item.episodeNumber,
+          start: item.start.toISOString(),
+          finish: item.finish.toISOString(),
           filePath: resolved.filePath,
           durationSeconds: resolved.durationSeconds,
           error: resolved.error,
         });
       }
 
-      let currentItem: ScheduleItemPreview | undefined;
-      if (current) {
-        const start = fromSqliteUtc(current.start);
-        const finish = fromSqliteUtc(current.finish);
-        const prog = matchProgramme(guide.programmes, ch.tvgId, start);
-        const labels = resolveItemLabels(db, current, prog);
-        currentItem = {
-          mediaItemId: current.mediaItemId,
-          title: labels.title,
-          episodeTitle: labels.episodeTitle,
-          seasonNumber: labels.seasonNumber,
-          episodeNumber: labels.episodeNumber,
-          start: start.toISOString(),
-          finish: finish.toISOString(),
-        };
-      }
+      const currentItem: ScheduleItemPreview | undefined = labeledCurrent
+        ? {
+            mediaItemId: labeledCurrent.row.mediaItemId,
+            title: labeledCurrent.title,
+            episodeTitle: labeledCurrent.episodeTitle,
+            seasonNumber: labeledCurrent.seasonNumber,
+            episodeNumber: labeledCurrent.episodeNumber,
+            start: labeledCurrent.start.toISOString(),
+            finish: labeledCurrent.finish.toISOString(),
+          }
+        : undefined;
 
       const out = promoOutputFile(settings.outputPath, ch.name);
       const leadMs = settings.regenLeadMinutes * 60_000;
@@ -447,9 +534,12 @@ export async function loadChannelViews(
       ms: Date.now() - started,
       channels: views.length,
       nextItemErrors: missingPaths,
+      ttlSec: SCHEDULE_TTL_MS / 1000,
     });
 
-    viewsCache = { at: Date.now(), key: cacheKey, views };
+    const at = Date.now();
+    scheduleCache = { at, key: cacheKey, byNumber };
+    viewsCache = { at, key: cacheKey, views };
     return views;
   } finally {
     db.close();
@@ -459,6 +549,44 @@ export async function loadChannelViews(
 export function invalidateChannelCaches(): void {
   guideCache = null;
   viewsCache = null;
+  scheduleCache = null;
+}
+
+/** Bust schedule caches and reload (UI “Refresh schedule”). */
+export async function refreshChannelViews(
+  settings: AppSettings,
+): Promise<ChannelView[]> {
+  invalidateChannelCaches();
+  return loadChannelViews(settings);
+}
+
+async function ensureChannelSchedule(
+  settings: AppSettings,
+  channelNumber: string,
+): Promise<ChannelScheduleSlice> {
+  const cacheKey = settingsCacheKey(settings);
+  if (!scheduleCacheFresh(cacheKey)) {
+    // Views + schedule share one snapshot — clear both so we never return
+    // stale schedule behind a still-fresh viewsCache early-return.
+    viewsCache = null;
+    scheduleCache = null;
+    await loadChannelViews(settings);
+  }
+
+  const slice = scheduleCache?.byNumber.get(channelNumber);
+  if (!slice) {
+    throw new Error(`Channel ${channelNumber} not found`);
+  }
+
+  return slice;
+}
+
+/** Public alias for live encode path (avoids a second views load for the name). */
+export async function ensureChannelScheduleForLive(
+  settings: AppSettings,
+  channelNumber: string,
+): Promise<ChannelScheduleSlice> {
+  return ensureChannelSchedule(settings, channelNumber);
 }
 
 export type ChapterProgress = (
@@ -479,7 +607,7 @@ export interface UpcomingPromoMetaItem {
 
 /**
  * Upcoming primary items for VO warm / fingerprint — no media file resolve.
- * Fetches enough rows for current window + look-ahead (+1).
+ * Uses the shared 1-minute schedule snapshot (current window + look-ahead).
  */
 export async function listUpcomingPromoMeta(
   settings: AppSettings,
@@ -490,53 +618,34 @@ export async function listUpcomingPromoMeta(
   currentKey?: string;
   items: UpcomingPromoMetaItem[];
 }> {
-  const { m3u, guide, languageByNumber } = await loadGuide(settings);
-  const channelMeta = m3u.find((c) => c.number === channelNumber);
-  if (!channelMeta) throw new Error(`Channel ${channelNumber} not found`);
-
   const overrides = loadChannelOverrides();
   const override = overrides[channelNumber] ?? { enabled: true };
   if (override.enabled === false) {
     throw new Error(`Channel ${channelNumber} is disabled`);
   }
 
-  const language =
-    override.language || languageByNumber.get(channelNumber) || "en";
+  const slice = await ensureChannelSchedule(settings, channelNumber);
+  const items = slice.next.map((item) => ({
+    mediaItemId: item.row.mediaItemId,
+    start: item.row.start,
+    finish: item.row.finish,
+    title: item.title,
+    episodeTitle: item.episodeTitle,
+    seasonNumber: item.seasonNumber,
+    episodeNumber: item.episodeNumber,
+    startLabel: formatStartsAtLabel(
+      slice.language,
+      item.start,
+      settings.timeZone,
+    ),
+  }));
 
-  const db = openDb(settings.etvDatabase, true);
-  try {
-    const now = new Date();
-    const current = getCurrentPrimaryItem(db, channelNumber, toUtcSqlite(now));
-    const afterIso = current ? current.finish : toUtcSqlite(now);
-    const need = (settings.promoItemCount ?? 3) + 1;
-    const nextRows = getPrimaryItemsAfter(db, channelNumber, afterIso, need);
-    const items = nextRows.map((row) => {
-      const start = fromSqliteUtc(row.start);
-      const prog = matchProgramme(guide.programmes, channelMeta.tvgId, start);
-      const labels = resolveItemLabels(db, row, prog);
-      return {
-        mediaItemId: row.mediaItemId,
-        start: row.start,
-        finish: row.finish,
-        title: labels.title,
-        episodeTitle: labels.episodeTitle,
-        seasonNumber: labels.seasonNumber,
-        episodeNumber: labels.episodeNumber,
-        startLabel: formatStartsAtLabel(language, start, settings.timeZone),
-      };
-    });
-
-    return {
-      channelName: channelMeta.name,
-      language,
-      currentKey: current
-        ? `${current.mediaItemId}@${current.start}`
-        : undefined,
-      items,
-    };
-  } finally {
-    db.close();
-  }
+  return {
+    channelName: slice.channelName,
+    language: slice.language,
+    currentKey: slice.currentKey,
+    items,
+  };
 }
 
 export async function buildPromoChaptersForChannel(
@@ -560,80 +669,48 @@ export async function buildPromoChaptersForChannel(
   }>;
 }> {
   const progress = onProgress ?? (() => undefined);
-  invalidateChannelCaches();
-  log.info("building promo chapters", { channelNumber });
-  progress("Loading guide (M3U / XMLTV)");
-  const { m3u, guide, languageByNumber } = await loadGuide(settings);
-  const channelMeta = m3u.find((c) => c.number === channelNumber);
-  if (!channelMeta) throw new Error(`Channel ${channelNumber} not found`);
-
   const overrides = loadChannelOverrides();
   const override = overrides[channelNumber] ?? { enabled: true };
-  if (override.enabled === false)
+  if (override.enabled === false) {
     throw new Error(`Channel ${channelNumber} is disabled`);
-
-  progress(`Opening ErsatzTV database for ${channelMeta.name}`);
-  const db = openDb(settings.etvDatabase, true);
-  let labeledRows: Array<{
-    row: PlayoutRow;
-    start: Date;
-    title: string;
-    episodeTitle?: string;
-    seasonNumber?: number;
-    episodeNumber?: number;
-  }> = [];
-
-  try {
-    const now = new Date();
-    const current = getCurrentPrimaryItem(db, channelNumber, toUtcSqlite(now));
-    const afterIso = current ? current.finish : toUtcSqlite(now);
-    const nextRows = getPrimaryItemsAfter(
-      db,
-      channelNumber,
-      afterIso,
-      settings.promoItemCount ?? 3,
-    );
-
-    progress(`Found ${nextRows.length} upcoming primary item(s)`);
-    labeledRows = nextRows.map((row) => {
-      const start = fromSqliteUtc(row.start);
-      const prog = matchProgramme(guide.programmes, channelMeta.tvgId, start);
-      const labels = resolveItemLabels(db, row, prog);
-      return { row, start, ...labels };
-    });
-
-    log.debug("upcoming playout rows", {
-      channel: channelMeta.name,
-      currentId: current?.mediaItemId,
-      next: labeledRows.map((r) => ({
-        id: r.row.mediaItemId,
-        title: r.title,
-        episodeTitle: r.episodeTitle,
-        s: r.seasonNumber,
-        e: r.episodeNumber,
-        path: r.row.filePath,
-      })),
-    });
-  } finally {
-    db.close();
   }
 
+  log.info("building promo chapters", { channelNumber });
+  progress("Loading schedule snapshot");
+  const slice = await ensureChannelSchedule(settings, channelNumber);
+  const itemCount = settings.promoItemCount ?? 3;
+  const labeledRows = slice.next.slice(0, itemCount);
+  progress(`Found ${labeledRows.length} upcoming primary item(s) (cached)`);
+
+  log.debug("upcoming playout rows", {
+    channel: slice.channelName,
+    currentId: slice.current?.row.mediaItemId,
+    next: labeledRows.map((r) => ({
+      id: r.row.mediaItemId,
+      title: r.title,
+      episodeTitle: r.episodeTitle,
+      s: r.seasonNumber,
+      e: r.episodeNumber,
+      path: r.row.filePath,
+    })),
+  });
+
   const logoCacheDir = path.join(settings.cachePath, "logos");
-  if (channelMeta.logoUrl) progress("Downloading channel logo");
-  const logoPath = channelMeta.logoUrl
+  if (slice.upstreamLogoUrl) progress("Downloading channel logo");
+  const logoPath = slice.upstreamLogoUrl
     ? await downloadLogo(
-        resolveLogoUrl(channelMeta.logoUrl, settings.etvUrl),
+        resolveLogoUrl(slice.upstreamLogoUrl, settings.etvUrl),
         logoCacheDir,
-        sanitizeChannelFolderName(channelMeta.number),
+        sanitizeChannelFolderName(slice.channelNumber),
       )
     : undefined;
 
   const color =
     override.color ??
+    slice.color ??
     (logoPath ? await extractDominantColor(logoPath) : "#1a468d");
 
-  const language =
-    override.language || languageByNumber.get(channelNumber) || "en";
+  const language = slice.language;
 
   progress(`Using color ${color}, language ${language}`);
 
@@ -707,13 +784,13 @@ export async function buildPromoChaptersForChannel(
 
   if (chapters.length === 0) {
     throw new Error(
-      `No resolvable upcoming items for channel ${channelMeta.name}`,
+      `No resolvable upcoming items for channel ${slice.channelName}`,
     );
   }
 
   progress(`Ready with ${chapters.length} chapter source(s)`);
   log.info("promo chapters ready", {
-    channel: channelMeta.name,
+    channel: slice.channelName,
     language,
     chapters: chapters.map((c) => ({
       title: c.title,
@@ -723,7 +800,7 @@ export async function buildPromoChaptersForChannel(
   });
 
   return {
-    channelName: channelMeta.name,
+    channelName: slice.channelName,
     language,
     color,
     logoPath,

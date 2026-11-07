@@ -267,6 +267,82 @@ export class JobQueue {
     });
   }
 
+  /**
+   * Side-band status for an in-flight live promo encode (not queued through pump).
+   * One running job per channel+container; returns the job id for log/finish.
+   */
+  beginLiveStream(opts: {
+    channelNumber: string;
+    channelName: string;
+    container: string;
+  }): JobInfo {
+    const id = `live-${opts.channelNumber}-${opts.container}`;
+    const existing = this.jobs.get(id);
+    if (existing && existing.status === "running") {
+      this.appendLog(id, "info", "Additional client connected");
+      return this.publicJob(existing);
+    }
+
+    const job: InternalJob = {
+      id,
+      kind: "live-stream",
+      channelNumber: opts.channelNumber,
+      channelName: opts.channelName,
+      status: "running",
+      queuedAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      logs: [],
+      priority: 100,
+    };
+
+    this.jobs.set(id, job);
+    this.appendLog(
+      id,
+      "info",
+      `Live ${opts.container} encode starting · #${opts.channelNumber}`,
+      false,
+    );
+
+    log.info("live-stream job started", {
+      id,
+      channel: opts.channelName,
+      container: opts.container,
+    });
+
+    this.emit();
+    return this.publicJob(job);
+  }
+
+  logLiveStream(jobId: string, level: JobLogLevel, message: string): void {
+    if (!this.jobs.has(jobId)) return;
+
+    this.appendLog(jobId, level, message);
+  }
+
+  finishLiveStream(
+    jobId: string,
+    status: "succeeded" | "failed",
+    error?: string,
+  ): void {
+    const job = this.jobs.get(jobId);
+    if (!job || job.kind !== "live-stream") return;
+    if (job.status !== "running") return;
+
+    job.status = status;
+    job.finishedAt = new Date().toISOString();
+    if (error) job.error = error;
+    this.appendLog(
+      jobId,
+      status === "succeeded" ? "info" : "error",
+      status === "succeeded"
+        ? "Live stream ended"
+        : `Live stream failed${error ? `: ${error}` : ""}`,
+      false,
+    );
+
+    this.emit();
+  }
+
   private enqueueBlocking(opts: {
     kind: "push" | "rollback";
     channelNumber: string;
