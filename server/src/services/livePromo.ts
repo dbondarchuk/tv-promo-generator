@@ -25,14 +25,17 @@ const DISCONNECT_GRACE_MS = 5_000;
 /** After encode finishes, keep the file briefly for late joiners. */
 const POST_ENCODE_GRACE_MS = 20_000;
 /** Don't send headers until the mux has at least this much data. */
-const MIN_BYTES_BEFORE_STREAM = 16 * 1024;
+const MIN_BYTES_BEFORE_STREAM = 64 * 1024;
+/** MPEG-TS packet size — never expose a torn trailing packet from a growing file. */
+const TS_PACKET_SIZE = 188;
+/** While ffmpeg is still writing, withhold this many trailing packets. */
+const TS_WRITE_MARGIN_PACKETS = 48;
 const PUMP_POLL_MS = 50;
 const PUMP_CHUNK = 64 * 1024;
-/**
- * Deliver slightly ahead of realtime so ETV's transcoder doesn't underrun,
- * but keep the HTTP body open for ~promo duration (avoids reconnect_streamed).
- */
+/** Slightly ahead of realtime so ETV doesn't underrun; keeps HTTP open ~promo length. */
 const PACE_AHEAD = 1.05;
+/** Nominal mux rate while final size is unknown (~4.4 Mbps). */
+const NOMINAL_BYTES_PER_SEC = 550_000;
 
 interface LiveSession {
   key: string;
@@ -198,14 +201,20 @@ function waitForDrain(res: Response): Promise<void> {
   });
 }
 
-/** Nominal mux rate while the final size is still unknown (~4.4 Mbps). */
-const NOMINAL_BYTES_PER_SEC = 550_000;
+/** Readable byte length for a mux file (TS-aligned + write margin while encoding). */
+function readableFileSize(
+  rawSize: number,
+  container: LivePromoContainer,
+  encodeDone: boolean,
+): number {
+  if (rawSize <= 0) return 0;
+  if (container !== "mpegts" || encodeDone) return rawSize;
 
-/**
- * How far (bytes) a paced reader may be at `now`.
- * Bitrate × wall clock keeps the HTTP body open ~promo duration so ETV's
- * `reconnect_streamed` does not treat an early EOF as a drop and retry.
- */
+  const aligned = Math.floor(rawSize / TS_PACKET_SIZE) * TS_PACKET_SIZE;
+  const margin = TS_WRITE_MARGIN_PACKETS * TS_PACKET_SIZE;
+  return Math.max(0, aligned - margin);
+}
+
 function pacedMaxOffset(
   readerStartMs: number,
   totalSeconds: number,
@@ -225,9 +234,14 @@ function pacedMaxOffset(
 }
 
 /**
- * Stream a growing (or finished) mux file from byte 0.
- * MPEG-TS to ETV is paced ~realtime while encoding; finished-file readers
- * get Content-Length and an unpaced full body (clean finite HTTP response).
+ * Stream the live mux from byte 0 while it grows.
+ *
+ * MPEG-TS: only complete 188-byte packets (plus a write margin) so the first
+ * client doesn't get torn video; paced ~1x so the HTTP body lasts ~promo
+ * duration (ETV reconnect_streamed). Late joiners after encodeDone get
+ * Content-Length and a full finite body.
+ *
+ * Does NOT wait for encode to finish — that would burn wall-clock airtime.
  */
 async function pumpGrowingFile(
   session: LiveSession,
@@ -237,7 +251,6 @@ async function pumpGrowingFile(
   let offset = 0;
   const buf = Buffer.alloc(PUMP_CHUNK);
   const readerStartMs = Date.now();
-  // fMP4 preview can fill ASAP; ETV MPEG-TS must not EOF early.
   const paceRealtime = session.container === "mpegts";
 
   while (!session.encodeDone) {
@@ -248,7 +261,11 @@ async function pumpGrowingFile(
     try {
       if (
         fs.existsSync(outputPath) &&
-        fs.statSync(outputPath).size >= MIN_BYTES_BEFORE_STREAM
+        readableFileSize(
+          fs.statSync(outputPath).size,
+          session.container,
+          false,
+        ) >= MIN_BYTES_BEFORE_STREAM
       ) {
         break;
       }
@@ -264,20 +281,16 @@ async function pumpGrowingFile(
   }
 
   const serveFinished = session.encodeDone;
-  let finishedSize: number | undefined;
+  let contentLength: number | undefined;
   if (serveFinished) {
     try {
-      finishedSize = fs.statSync(outputPath).size;
+      contentLength = fs.statSync(outputPath).size;
     } catch {
       return;
     }
   }
 
-  writeLiveHeaders(
-    res,
-    session.contentType,
-    serveFinished ? finishedSize : undefined,
-  );
+  writeLiveHeaders(res, session.contentType, contentLength);
 
   let fd: number | undefined;
   try {
@@ -288,12 +301,18 @@ async function pumpGrowingFile(
     }
 
     while (session.readers.has(res) && !res.writableEnded && !res.destroyed) {
-      let size = 0;
+      let rawSize = 0;
       try {
-        size = fs.fstatSync(fd).size;
+        rawSize = fs.fstatSync(fd).size;
       } catch {
         break;
       }
+
+      const size = readableFileSize(
+        rawSize,
+        session.container,
+        session.encodeDone,
+      );
 
       if (offset < size) {
         let toRead = Math.min(PUMP_CHUNK, size - offset);
@@ -317,6 +336,15 @@ async function pumpGrowingFile(
             await sleep(PUMP_POLL_MS);
             continue;
           }
+
+          // Keep MPEG-TS packet alignment on every write.
+          if (session.container === "mpegts") {
+            toRead = Math.floor(toRead / TS_PACKET_SIZE) * TS_PACKET_SIZE;
+            if (toRead <= 0) {
+              await sleep(PUMP_POLL_MS);
+              continue;
+            }
+          }
         }
 
         const bytesRead = fs.readSync(fd, buf, 0, toRead, offset);
@@ -332,6 +360,27 @@ async function pumpGrowingFile(
       }
 
       if (session.encodeDone) {
+        if (offset < rawSize) {
+          let toRead = Math.min(PUMP_CHUNK, rawSize - offset);
+          if (session.container === "mpegts" && offset % TS_PACKET_SIZE === 0) {
+            toRead = Math.floor(toRead / TS_PACKET_SIZE) * TS_PACKET_SIZE;
+            if (toRead <= 0 && rawSize - offset < TS_PACKET_SIZE) {
+              toRead = rawSize - offset;
+            }
+            if (toRead <= 0) {
+              break;
+            }
+          }
+
+          const bytesRead = fs.readSync(fd, buf, 0, toRead, offset);
+          if (bytesRead > 0) {
+            offset += bytesRead;
+            const ok = res.write(buf.subarray(0, bytesRead));
+            if (!ok) await waitForDrain(res);
+            continue;
+          }
+        }
+
         break;
       }
 
@@ -361,8 +410,8 @@ function attachReader(session: LiveSession, res: Response, key: string): void {
   const mode = session.encodeDone
     ? "finished file"
     : session.container === "mpegts"
-      ? "paced ~1x"
-      : "as available";
+      ? "growing · paced ~1x · TS-safe"
+      : "growing file";
 
   if (session.jobId && jobQueue) {
     jobQueue.logLiveStream(
@@ -535,7 +584,7 @@ async function createLiveSession(
         if (tail) progress(tail.slice(-500), "error");
       } else {
         progress(`Encode finished · encoder OK (${encoderLabel})`);
-        progress("Paced readers continue from file");
+        progress("Flushing file to remaining reader(s)");
       }
 
       scheduleEndIfIdle(key, POST_ENCODE_GRACE_MS);
