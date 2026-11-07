@@ -371,13 +371,11 @@ async function ensureSession(
 /**
  * Continuous MPEG-TS for ETV Remote Stream and Channels UI (mpegts.js).
  *
- * Progressive pump (on-the-fly): wait for a short prebuffer, then stream whole
- * 188-byte packets while holding back a trailing edge during encode. After the
- * file is fully pumped we keep the HTTP connection open until the client
- * disconnects — ETV adds reconnect_streamed for HTTP inputs, and closing early
- * (while -readrate 1.0 is mid-item) causes reconnect + AAC decode corruption.
- *
- * Pair with YAML/DB `is_live: true` so ETV stays realtime (no SeekAndWorkAhead).
+ * Progressive pump (on-the-fly): short prebuffer, then whole 188-byte packets
+ * with a trailing hold-back while encoding. When the encode finishes we send
+ * the remaining bytes and **close immediately** — withholding EOF makes ETV
+ * SeekAndWorkAhead (and troubleshooting) sit until ffmpeg stall (~0.4x), even
+ * when our encode is 2x+. Pair with YAML/DB `is_live: true` for realtime air.
  */
 export async function serveLiveMpegTs(
   settings: AppSettings,
@@ -443,12 +441,40 @@ export async function serveLiveMpegTs(
     return;
   }
 
+  // Encode already finished — definitive VOD response (Content-Length + EOF).
+  if (session.encodeDone) {
+    try {
+      const size = fs.statSync(session.mpegtsPath).size;
+      if (session.jobId && jobQueue) {
+        jobQueue.logLiveStream(
+          session.jobId,
+          "info",
+          `MPEG-TS complete file · ${size} bytes · Content-Length`,
+        );
+      }
+
+      res.status(200);
+      res.setHeader("Content-Type", "video/MP2T");
+      res.setHeader("Content-Length", String(size));
+      res.setHeader("Cache-Control", "no-store");
+
+      await new Promise<void>((resolve, reject) => {
+        res.sendFile(session.mpegtsPath, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } finally {
+      session.tsReaders = Math.max(0, session.tsReaders - 1);
+      scheduleEndIfIdle(key);
+    }
+
+    return;
+  }
+
   res.status(200);
   res.setHeader("Content-Type", "video/MP2T");
   res.setHeader("Cache-Control", "no-store");
-  // Leave connection open after body so ETV's readrate/reconnect does not
-  // treat early EOF as a live reconnect.
-  res.setHeader("Connection", "keep-alive");
 
   let offset = 0;
   const buf = Buffer.alloc(64 * 1024);
@@ -500,37 +526,6 @@ export async function serveLiveMpegTs(
 
       await sleep(PUMP_POLL_MS);
     }
-
-    if (fd != null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // ignore
-      }
-
-      fd = undefined;
-    }
-
-    if (session.jobId && jobQueue) {
-      jobQueue.logLiveStream(
-        session.jobId,
-        "info",
-        `MPEG-TS bytes sent · ${offset} — holding connection for client`,
-      );
-    }
-
-    // Park until ETV/UI closes (readrate may still be draining its buffer).
-    const holdDeadline =
-      Date.now() + Math.max(60_000, (session.totalSeconds + 30) * 1000);
-
-    while (
-      !res.writableEnded &&
-      !res.destroyed &&
-      Date.now() < holdDeadline
-    ) {
-      touchAccess(session);
-      await sleep(500);
-    }
   } finally {
     if (fd != null) {
       try {
@@ -542,6 +537,8 @@ export async function serveLiveMpegTs(
 
     session.tsReaders = Math.max(0, session.tsReaders - 1);
     try {
+      // EOF must follow the last byte — work-ahead/troubleshooting stall if we
+      // park the socket after the body (wall-clock looks like ~0.4x).
       if (!res.writableEnded) res.end();
     } catch {
       // ignore
