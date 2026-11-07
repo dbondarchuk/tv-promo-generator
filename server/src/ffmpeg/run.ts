@@ -44,13 +44,13 @@ export function runFfmpeg(
   });
 }
 
-/** Spawn ffmpeg with stdout piped (for live MPEG-TS). Caller owns the process. */
-export function spawnFfmpegPiped(
+/** Spawn ffmpeg writing to a file path in args; stderr piped for progress/errors. */
+export function spawnFfmpegFile(
   args: string[],
-): ChildProcessByStdio<null, Readable, Readable> {
+): ChildProcessByStdio<null, null, Readable> {
   const { ffmpeg } = resolveFfmpegBinaries();
   return spawn(ffmpeg, ["-hide_banner", "-y", ...args], {
     windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"] as const,
+    stdio: ["ignore", "ignore", "pipe"] as const,
   });
 }

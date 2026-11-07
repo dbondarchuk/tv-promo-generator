@@ -17,7 +17,7 @@ import {
   probeAudioStreams,
   probeDurationSeconds,
 } from "../ffmpeg/probe.js";
-import { runFfmpeg, spawnFfmpegPiped } from "../ffmpeg/run.js";
+import { runFfmpeg, spawnFfmpegFile } from "../ffmpeg/run.js";
 import {
   formatEpisodeSubtitle,
   formatOverlayHeadline,
@@ -675,8 +675,8 @@ function buildPromoFfmpegArgs(
   prepared: PreparedPromoEncode,
   output:
     | { kind: "file"; path: string }
-    | { kind: "mpegts-pipe" }
-    | { kind: "fmp4-pipe" },
+    | { kind: "mpegts-file"; path: string }
+    | { kind: "fmp4-file"; path: string },
 ): string[] {
   const {
     timing,
@@ -781,8 +781,8 @@ function buildPromoFfmpegArgs(
     String(totalSeconds),
   );
 
-  if (output.kind === "mpegts-pipe") {
-    // Periodic PAT/PMT so ETV reconnects / late joiners can lock onto the stream.
+  if (output.kind === "mpegts-file") {
+    // Growing .ts on disk — readers stream from byte 0 (incl. late joiners).
     args.push(
       "-f",
       "mpegts",
@@ -798,9 +798,9 @@ function buildPromoFfmpegArgs(
       "0.5",
       "-mpegts_flags",
       "+resend_headers",
-      "pipe:1",
+      output.path,
     );
-  } else if (output.kind === "fmp4-pipe") {
+  } else if (output.kind === "fmp4-file") {
     // Fragmented MP4 for HTML5 <video> preview (browsers cannot play MPEG-TS).
     args.push(
       "-f",
@@ -811,7 +811,7 @@ function buildPromoFfmpegArgs(
       "1",
       "-tag:v",
       "avc1",
-      "pipe:1",
+      output.path,
     );
   } else {
     args.push("-movflags", "+faststart", output.path);
@@ -886,13 +886,18 @@ export async function renderPromo(
   return { voiceError: prepared.voiceError };
 }
 
-/** Live encode to stdout: VO cache-only (skip if cold). Returns spawned ffmpeg. */
+/**
+ * Live encode to a growing file (VO cache-only). Readers stream that file from
+ * byte 0 — including late joiners — while ffmpeg is still writing.
+ */
 export async function startLivePromoEncode(
   settings: AppSettings,
   req: PromoRenderRequest,
   container: LivePromoContainer = "mpegts",
+  outputPath: string,
 ): Promise<{
-  process: ChildProcessByStdio<null, Readable, Readable>;
+  process: ChildProcessByStdio<null, null, Readable>;
+  outputPath: string;
   voiceHashes: string[];
   totalSeconds: number;
   workDir: string;
@@ -911,7 +916,7 @@ export async function startLivePromoEncode(
         ? "dual"
         : "triptych";
 
-  const pipeKind = container === "fmp4" ? "fmp4-pipe" : "mpegts-pipe";
+  const fileKind = container === "fmp4" ? "fmp4-file" : "mpegts-file";
   // Browser <video> is picky about HW bitstreams — preview uses software H264.
   const encodeSettings =
     container === "fmp4"
@@ -919,17 +924,21 @@ export async function startLivePromoEncode(
       : settings;
 
   progress(
-    `Live ${layoutLabel} ${container} (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
+    `Live ${layoutLabel} ${container} file-backed (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
   );
 
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
   const args = buildPromoFfmpegArgs(encodeSettings, req, prepared, {
-    kind: pipeKind,
+    kind: fileKind,
+    path: outputPath,
   });
 
-  const child = spawnFfmpegPiped(args);
+  const child = spawnFfmpegFile(args);
 
   return {
     process: child,
+    outputPath,
     voiceHashes: prepared.voiceHashes,
     totalSeconds: prepared.totalSeconds,
     workDir: req.workDir,
