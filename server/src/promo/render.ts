@@ -6,10 +6,12 @@ import type { Readable } from "node:stream";
 import { createLowerThirdBar } from "../color.js";
 import {
   buildEncoderPlan,
+  describeEncoderPlan,
   escapeDrawtext,
   escapeFilterPath,
   globalHwArgs,
   isHardwareEncodeFailure,
+  summarizeHwFailure,
 } from "../ffmpeg/hwaccel.js";
 import {
   pickAudioStreamForLanguage,
@@ -838,9 +840,12 @@ export async function renderPromo(
         ? "dual"
         : "triptych";
 
+  let usedSettings = settings;
   progress(
-    `Encoding ${layoutLabel} promo (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, ${settings.hardwareAcceleration})`,
+    `Encoding ${layoutLabel} promo (${prepared.itemCount} item(s), ${prepared.totalSeconds}s)`,
   );
+
+  progress(`Encoder: ${describeEncoderPlan(usedSettings)}`);
 
   const encodeWith = (encodeSettings: AppSettings) =>
     runFfmpeg(
@@ -851,14 +856,16 @@ export async function renderPromo(
       { onProgress: (message) => progress(message) },
     );
 
-  let result = await encodeWith(settings);
+  let result = await encodeWith(usedSettings);
   if (
     result.code !== 0 &&
-    settings.hardwareAcceleration !== "None" &&
+    usedSettings.hardwareAcceleration !== "None" &&
     isHardwareEncodeFailure(result.stderr)
   ) {
+    const hint = summarizeHwFailure(result.stderr);
     progress(
-      `Hardware encode failed (${settings.hardwareAcceleration}); retrying with software libx264`,
+      `Hardware encode failed (${usedSettings.hardwareAcceleration}` +
+        `${hint ? `: ${hint}` : ""}) — retrying with software`,
       "warn",
     );
 
@@ -868,7 +875,9 @@ export async function renderPromo(
       "utf8",
     );
 
-    result = await encodeWith({ ...settings, hardwareAcceleration: "None" });
+    usedSettings = { ...settings, hardwareAcceleration: "None" };
+    progress(`Encoder fallback: ${describeEncoderPlan(usedSettings)}`, "warn");
+    result = await encodeWith(usedSettings);
   }
 
   if (result.code !== 0) {
@@ -882,7 +891,10 @@ export async function renderPromo(
   fs.copyFileSync(tempOut, finalPath);
   fs.renameSync(finalPath, req.outputFile);
   fs.rmSync(tempOut, { force: true });
-  progress("Promo file written");
+  progress(
+    `Promo file written · encoder OK (${describeEncoderPlan(usedSettings)})`,
+  );
+
   return { voiceError: prepared.voiceError };
 }
 
@@ -902,6 +914,7 @@ export async function startLivePromoEncode(
   totalSeconds: number;
   workDir: string;
   container: LivePromoContainer;
+  encodeSettings: AppSettings;
 }> {
   const progress = req.onProgress ?? (() => undefined);
   const prepared = await preparePromoEncode(settings, {
@@ -927,6 +940,14 @@ export async function startLivePromoEncode(
     `Live ${layoutLabel} ${container} file-backed (${prepared.itemCount} item(s), ${prepared.totalSeconds}s, VO ${prepared.hasVoice ? "on" : "off"})`,
   );
 
+  if (container === "fmp4" && settings.hardwareAcceleration !== "None") {
+    progress(
+      `Preview forces software encode (settings hwaccel=${settings.hardwareAcceleration} ignored)`,
+    );
+  }
+
+  progress(`Encoder: ${describeEncoderPlan(encodeSettings)}`);
+
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   const args = buildPromoFfmpegArgs(encodeSettings, req, prepared, {
@@ -943,5 +964,6 @@ export async function startLivePromoEncode(
     totalSeconds: prepared.totalSeconds,
     workDir: req.workDir,
     container,
+    encodeSettings,
   };
 }

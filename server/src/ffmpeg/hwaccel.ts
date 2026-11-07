@@ -146,6 +146,57 @@ export function isHardwareEncodeFailure(stderr: string): boolean {
   );
 }
 
+/** One-line summary for job logs: accel mode, encoder, bitrate. */
+export function describeEncoderPlan(settings: AppSettings): string {
+  const plan = buildEncoderPlan(settings);
+  const accel = settings.hardwareAcceleration || "None";
+  const codec = settings.videoCodec || "H264";
+  const bitrate = `${settings.videoBitrate}k`;
+
+  if (accel === "None") {
+    return `software ${plan.videoEncoder} (${codec}, ${bitrate})`;
+  }
+
+  const bits = [
+    `hwaccel=${accel}`,
+    `encoder=${plan.videoEncoder}`,
+    codec,
+    bitrate,
+  ];
+
+  if (accel === "Vaapi" || accel === "Qsv") {
+    bits.push(`device=${settings.vaapiDevice || "/dev/dri/renderD128"}`);
+  }
+
+  if (accel === "Nvenc" && settings.videoPreset) {
+    bits.push(`preset=${settings.videoPreset}`);
+  }
+
+  return bits.join(" · ");
+}
+
+/** Short stderr snippet that explains a hardware encode failure. */
+export function summarizeHwFailure(stderr: string): string | undefined {
+  if (!isHardwareEncodeFailure(stderr)) return undefined;
+
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const hit = lines.find((l) => {
+    const t = l.toLowerCase();
+    return (
+      t.includes("error") ||
+      t.includes("failed") ||
+      t.includes("cannot") ||
+      t.includes("impossible")
+    );
+  });
+
+  return (hit ?? lines[lines.length - 1])?.slice(0, 240);
+}
+
 /**
  * Escape for drawtext when embedded in -filter_complex.
  * ASCII apostrophe breaks ffmpeg's quoted option parser no matter how many

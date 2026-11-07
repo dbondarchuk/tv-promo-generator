@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildEncoderPlan,
+  describeEncoderPlan,
   escapeDrawtext,
   globalHwArgs,
   isHardwareEncodeFailure,
+  summarizeHwFailure,
 } from "./hwaccel.js";
 
 test("None uses libx264", () => {
@@ -63,6 +65,26 @@ test("isHardwareEncodeFailure detects MFX/QSV errors", () => {
     isHardwareEncodeFailure("Error while filtering: Invalid argument"),
     false,
   );
+});
+
+test("describeEncoderPlan names hw encoder", () => {
+  const line = describeEncoderPlan({
+    ...DEFAULT_SETTINGS,
+    hardwareAcceleration: "Nvenc",
+    videoBitrate: 4000,
+  });
+
+  assert.match(line, /hwaccel=Nvenc/);
+  assert.match(line, /h264_nvenc/);
+});
+
+test("summarizeHwFailure picks the error line", () => {
+  const hint = summarizeHwFailure(
+    "Opening device\nError initializing an MFX session: -3.\nDevice creation failed\n",
+  );
+
+  assert.ok(hint);
+  assert.match(hint!, /MFX|Device creation/i);
 });
 
 test("escapeDrawtext escapes colon", () => {
