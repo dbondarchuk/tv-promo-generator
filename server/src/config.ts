@@ -261,10 +261,14 @@ function normalizeSettings(
     ),
   );
 
-  merged.graphicsMidDelaySeconds = clampSec(
-    merged.graphicsMidDelaySeconds,
-    DEFAULT_SETTINGS.graphicsMidDelaySeconds,
-  );
+  const midPct = Number(merged.graphicsMidStartPercent);
+  merged.graphicsMidStartPercent =
+    Number.isFinite(midPct) && midPct >= 0 && midPct <= 100
+      ? Math.round(midPct)
+      : DEFAULT_SETTINGS.graphicsMidStartPercent;
+
+  delete (merged as { graphicsMidDelaySeconds?: number })
+    .graphicsMidDelaySeconds;
 
   merged.graphicsMidDurationSeconds = Math.max(
     1,

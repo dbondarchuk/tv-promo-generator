@@ -435,7 +435,11 @@ export function SettingsPage() {
             />
             Mid sequence (Now → fade → Next)
           </label>
-          {field("graphicsMidDelaySeconds", "Mid delay (seconds)", "number")}
+          {field(
+            "graphicsMidStartPercent",
+            "Mid start (% of content length)",
+            "number",
+          )}
           {field(
             "graphicsMidDurationSeconds",
             "Mid bumper duration each (seconds)",

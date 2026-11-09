@@ -279,6 +279,54 @@ async function loadGuide(settings: AppSettings): Promise<GuideCache> {
   return guideCache;
 }
 
+/**
+ * Channel language: override → ETV preferred audio language → en.
+ * Matches what the Channels UI shows when override.language is unset.
+ */
+export async function resolveChannelLanguageMap(
+  settings: AppSettings,
+  channelNumbers: string[],
+): Promise<Map<string, string>> {
+  const overrides = loadChannelOverrides();
+  const needsApi = channelNumbers.some((n) => !overrides[n]?.language?.trim());
+
+  let languageByNumber = new Map<string, string>();
+
+  if (needsApi) {
+    try {
+      const guide = await loadGuide(settings);
+      languageByNumber = guide.languageByNumber;
+    } catch (err) {
+      log.warn(
+        "channel language lookup failed; defaulting missing to en",
+        String(err),
+      );
+    }
+  }
+
+  const out = new Map<string, string>();
+  for (const n of channelNumbers) {
+    out.set(
+      n,
+      overrides[n]?.language?.trim() || languageByNumber.get(n)?.trim() || "en",
+    );
+  }
+
+  return out;
+}
+
+export async function resolveChannelLanguage(
+  settings: AppSettings,
+  channelNumber: string,
+  hint?: string,
+): Promise<string> {
+  if (hint?.trim()) return hint.trim();
+  if (!channelNumber) return "en";
+
+  const map = await resolveChannelLanguageMap(settings, [channelNumber]);
+  return map.get(channelNumber) || "en";
+}
+
 function settingsCacheKey(settings: AppSettings): string {
   return [
     settings.etvUrl,

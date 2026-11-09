@@ -65,6 +65,28 @@ function fadeWindowBeforeEnd(
   return `LinearFadePoints(content_seconds, ${start}, ${peakStart}, ${peakEnd}, ${end})`;
 }
 
+/**
+ * Mid bumpers: start at a fraction of content length, then hold for
+ * `duration` seconds (with fade in/out). `offsetSeconds` shifts the window
+ * (used for midNext after midNow).
+ */
+function fadeWindowFromContentPercent(
+  startPercent: number,
+  duration: number,
+  fade: number,
+  offsetSeconds = 0,
+): string {
+  const fraction = Number(
+    (Math.max(0, Math.min(100, startPercent)) / 100).toFixed(2),
+  );
+
+  const start = `content_total_seconds * ${fraction} + ${offsetSeconds}`;
+  const peakStart = `content_total_seconds * ${fraction} + ${offsetSeconds + fade}`;
+  const peakEnd = `content_total_seconds * ${fraction} + ${offsetSeconds + Math.max(fade, duration - fade)}`;
+  const end = `content_total_seconds * ${fraction} + ${offsetSeconds + duration}`;
+  return `LinearFadePoints(content_seconds, ${start}, ${peakStart}, ${peakEnd}, ${end})`;
+}
+
 function opacityExpression(
   slot: GraphicsTemplateSlot,
   settings: AppSettings,
@@ -83,14 +105,14 @@ function opacityExpression(
     return fadeWindowBeforeEnd(before + dur, before, fade);
   }
 
-  const delay = settings.graphicsMidDelaySeconds;
+  const midPct = settings.graphicsMidStartPercent;
   const dur = settings.graphicsMidDurationSeconds;
 
   if (slot === "midNow") {
-    return fadeWindow(delay, delay + dur, fade);
+    return fadeWindowFromContentPercent(midPct, dur, fade);
   }
 
-  return fadeWindow(delay + dur, delay + 2 * dur, fade);
+  return fadeWindowFromContentPercent(midPct, dur, fade, dur);
 }
 
 function overlayImageUrl(
@@ -100,9 +122,9 @@ function overlayImageUrl(
 ): string {
   const base = baseUrl.replace(/\/+$/, "");
   // Channel baked into per-channel template (ETV has no Channel_Number).
-  // MediaItem_Start = content start — schedule lookup for now/next (troubleshoot-safe).
-  // No string.url_encode (not available in ETV Scriban); use a URL-safe UTC form
-  // without '+' so query parsing won't turn the offset into a space.
+  // Language resolved at request time from channel via ETV.
+  // MediaItem_Start = content start for schedule lookup. No string.url_encode
+  // (missing in ETV Scriban); UTC Z form stays URL-safe without '+'.
   return (
     `${base}/graphics/overlay.png?phase=${phase}` +
     `&channelNumber=${encodeURIComponent(channelNumber)}` +

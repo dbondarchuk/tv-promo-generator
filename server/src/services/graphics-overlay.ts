@@ -14,6 +14,7 @@ import { runFfmpegStdout } from "../ffmpeg/run.js";
 import { createLogger } from "../util/log.js";
 import { rewritePath } from "../util/paths.js";
 import { formatEpisodeSubtitle, getCopyTemplate } from "../voice/templates.js";
+import { resolveChannelLanguage } from "./channels.js";
 
 const log = createLogger("graphics-overlay");
 
@@ -228,20 +229,6 @@ function resolveChannelName(
   return "Channel";
 }
 
-function resolveLanguage(
-  hints: GraphicsOverlayHints,
-  channelNumber: string,
-): string {
-  if (hints.language?.trim()) return hints.language.trim();
-
-  if (channelNumber) {
-    const override = loadChannelOverrides()[channelNumber];
-    if (override?.language?.trim()) return override.language.trim();
-  }
-
-  return "en";
-}
-
 type OverlayLine = { text: string; kind: "primary" | "episode" };
 
 function pushItemLines(lines: OverlayLine[], parts: GraphicsItemParts): void {
@@ -382,7 +369,12 @@ export async function renderGraphicsOverlayPng(
   const overrides = loadChannelOverrides();
   const channelNumber = resolveChannelNumber(ctx, hintsWithChannel);
   const channelName = resolveChannelName(ctx, hintsWithChannel, channelNumber);
-  const language = resolveLanguage(hintsWithChannel, channelNumber);
+  const language = await resolveChannelLanguage(
+    settings,
+    channelNumber,
+    hintsWithChannel.language,
+  );
+
   const color = (channelNumber && overrides[channelNumber]?.color) || "#1a468d";
 
   const nowParts = formatGraphicsItemParts(language, {

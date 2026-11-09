@@ -186,10 +186,10 @@ export interface AppSettings {
   graphicsNowDelaySeconds: number;
   graphicsNowDurationSeconds: number;
   /**
-   * Seconds after content start before the mid sequence
+   * Where the mid sequence starts, as % of content length
    * (Now bumper → fade out → Next bumper → fade out).
    */
-  graphicsMidDelaySeconds: number;
+  graphicsMidStartPercent: number;
   /** Duration of each bumper in the mid Now→Next sequence. */
   graphicsMidDurationSeconds: number;
   /** Seconds before content end when the Next bumper appears. */
@@ -430,7 +430,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   graphicsNextEnabled: true,
   graphicsNowDelaySeconds: 30,
   graphicsNowDurationSeconds: 8,
-  graphicsMidDelaySeconds: 90,
+  graphicsMidStartPercent: 50,
   graphicsMidDurationSeconds: 8,
   graphicsNextBeforeEndSeconds: 30,
   graphicsNextDurationSeconds: 8,
