@@ -101,10 +101,12 @@ function overlayImageUrl(
   const base = baseUrl.replace(/\/+$/, "");
   // Channel baked into per-channel template (ETV has no Channel_Number).
   // MediaItem_Start = content start — schedule lookup for now/next (troubleshoot-safe).
+  // No string.url_encode (not available in ETV Scriban); use a URL-safe UTC form
+  // without '+' so query parsing won't turn the offset into a space.
   return (
     `${base}/graphics/overlay.png?phase=${phase}` +
     `&channelNumber=${encodeURIComponent(channelNumber)}` +
-    `&at={{ format_datetime MediaItem_Start "UTC" "o" | string.url_encode }}`
+    `&at={{ format_datetime MediaItem_Start "UTC" "yyyy-MM-ddTHH:mm:ss.fffZ" }}`
   );
 }
 
