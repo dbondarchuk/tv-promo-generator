@@ -47,28 +47,30 @@ function isGraphicsPhase(value: unknown): value is GraphicsPhase {
 
 const log = createLogger("http");
 
+/** Coerce Express query values (string | string[] | ParsedQs) to a trim string. */
+function queryString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (Array.isArray(value) && value.length > 0) {
+    return queryString(value[0]);
+  }
+
+  return undefined;
+}
+
 export function createRouter(opts: {
   getSettings: () => AppSettings;
   setSettings: (s: AppSettings) => void;
   jobs: JobQueue;
 }): Router {
   const router = Router();
-
-  router.use((req, res, next) => {
-    const started = Date.now();
-    res.on("finish", () => {
-      const ms = Date.now() - started;
-      const payload = { status: res.statusCode, ms };
-      // Polling endpoints stay quiet at info; slow/error responses always show.
-      if (res.statusCode >= 400 || ms >= 1000 || req.method !== "GET") {
-        log.info(`${req.method} ${req.originalUrl}`, payload);
-      } else {
-        log.debug(`${req.method} ${req.originalUrl}`, payload);
-      }
-    });
-
-    next();
-  });
 
   router.get("/health", (_req, res) => {
     res.json({ ok: true });
@@ -528,55 +530,67 @@ export function createGraphicsRouter(getSettings: () => AppSettings): Router {
   const router = Router();
 
   router.get("/overlay.png", async (req, res) => {
+    const phaseRaw = queryString(req.query.phase) ?? "now";
+    const mediaItemRaw = Number(queryString(req.query.mediaItemId));
+    const mediaItemId =
+      Number.isFinite(mediaItemRaw) && mediaItemRaw > 0
+        ? mediaItemRaw
+        : undefined;
+    const at = queryString(req.query.at);
+    const channelNumber = queryString(req.query.channelNumber);
+    const channelName = queryString(req.query.channelName);
+    const language = queryString(req.query.language);
+
+    log.info("graphics overlay request", {
+      phase: phaseRaw,
+      mediaItemId: mediaItemId ?? null,
+      at: at ?? null,
+      channelNumber: channelNumber ?? null,
+      query: req.query,
+    });
+
     try {
       const settings = getSettings();
-      const phaseRaw = String(req.query.phase ?? "now");
       if (!isGraphicsPhase(phaseRaw)) {
-        res.status(400).type("text/plain").send("phase must be now|next");
+        const message = "phase must be now|next";
+        log.warn("graphics overlay rejected", { reason: message, phaseRaw });
+        res.status(400).type("text/plain").send(message);
         return;
       }
 
-      const mediaItemRaw = Number(req.query.mediaItemId);
-      const mediaItemId =
-        Number.isFinite(mediaItemRaw) && mediaItemRaw > 0
-          ? mediaItemRaw
-          : undefined;
+      if (!mediaItemId && !channelNumber) {
+        const message = "channelNumber or mediaItemId is required";
+        log.warn("graphics overlay rejected", {
+          reason: message,
+          query: req.query,
+        });
 
-      const channelNumber =
-        typeof req.query.channelNumber === "string"
-          ? req.query.channelNumber
-          : undefined;
-
-      const channelName =
-        typeof req.query.channelName === "string"
-          ? req.query.channelName
-          : undefined;
-
-      const language =
-        typeof req.query.language === "string" ? req.query.language : undefined;
-
-      if (!mediaItemId && !channelNumber?.trim()) {
-        res
-          .status(400)
-          .type("text/plain")
-          .send("channelNumber or mediaItemId is required");
-
+        res.status(400).type("text/plain").send(message);
         return;
       }
 
       const png = await renderGraphicsOverlayPng(settings, phaseRaw, {
         mediaItemId,
+        at,
         channelNumber,
         channelName,
         language,
       });
 
       res.setHeader("Content-Type", "image/png");
-      res.setHeader("Cache-Control", "private, max-age=60");
+      res.setHeader("Cache-Control", "private, max-age=30");
       res.send(png);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.error("GET /graphics/overlay.png failed", message);
+      log.error("graphics overlay failed", {
+        message,
+        phase: phaseRaw,
+        mediaItemId: mediaItemId ?? null,
+        at: at ?? null,
+        channelNumber: channelNumber ?? null,
+        query: req.query,
+      });
+
       if (!res.headersSent) {
         res.status(500).type("text/plain").send(message);
       }

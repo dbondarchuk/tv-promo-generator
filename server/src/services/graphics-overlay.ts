@@ -18,8 +18,13 @@ import { formatEpisodeSubtitle, getCopyTemplate } from "../voice/templates.js";
 const log = createLogger("graphics-overlay");
 
 export interface GraphicsOverlayHints {
-  /** When set, use this item; otherwise resolve current primary for the channel. */
+  /** Optional pin; otherwise resolve from channel schedule at `at`. */
   mediaItemId?: number;
+  /**
+   * ETV MediaItem_Start (content start). Used with channelNumber to pick
+   * the correct now/next playout rows (troubleshoot-safe).
+   */
+  at?: string;
   channelName?: string;
   channelNumber?: string;
   language?: string;
@@ -266,41 +271,77 @@ function phaseCopy(
   return { headline: t.nowOn(channelName), lines };
 }
 
+/** Normalize ETV MediaItem_Start / query `at` into an ISO UTC string. */
+export function parseOverlayAt(raw?: string): string | undefined {
+  if (!raw?.trim()) return undefined;
+
+  const trimmed = raw.trim();
+  const asNum = Number(trimmed);
+  if (Number.isFinite(asNum) && asNum > 1_000_000_000) {
+    // Unix seconds or ms
+    const ms = asNum > 1_000_000_000_000 ? asNum : asNum * 1000;
+    return new Date(ms).toISOString();
+  }
+
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+
+  return undefined;
+}
+
 function resolveOverlayMediaItemId(
   settings: AppSettings,
   hints: GraphicsOverlayHints,
-): { mediaItemId: number; channelNumber?: string; channelName?: string } {
+): {
+  mediaItemId: number;
+  channelNumber?: string;
+  channelName?: string;
+  atUtcIso?: string;
+} {
+  const channelNumber = hints.channelNumber?.trim();
+  const atUtcIso =
+    parseOverlayAt(hints.at) ?? new Date().toISOString();
+
+  if (channelNumber) {
+    const db = openDb(settings.etvDatabase, true);
+    try {
+      const current = getCurrentPrimaryItem(db, channelNumber, atUtcIso);
+      if (current?.mediaItemId) {
+        return {
+          mediaItemId: current.mediaItemId,
+          channelNumber: String(current.channelNumber ?? channelNumber),
+          channelName: current.channelName || undefined,
+          atUtcIso,
+        };
+      }
+    } finally {
+      db.close();
+    }
+
+    if (
+      hints.mediaItemId == null ||
+      !Number.isFinite(hints.mediaItemId) ||
+      hints.mediaItemId <= 0
+    ) {
+      throw new Error(
+        `No schedule item for channel ${channelNumber} at ${atUtcIso}`,
+      );
+    }
+  }
+
   if (
     hints.mediaItemId != null &&
     Number.isFinite(hints.mediaItemId) &&
     hints.mediaItemId > 0
   ) {
-    return { mediaItemId: hints.mediaItemId };
+    return {
+      mediaItemId: hints.mediaItemId,
+      channelNumber,
+      atUtcIso,
+    };
   }
 
-  const channelNumber = hints.channelNumber?.trim();
-  if (!channelNumber) {
-    throw new Error("mediaItemId or channelNumber is required");
-  }
-
-  const db = openDb(settings.etvDatabase, true);
-  try {
-    const nowIso = new Date().toISOString();
-    const current = getCurrentPrimaryItem(db, channelNumber, nowIso);
-    if (current?.mediaItemId) {
-      return {
-        mediaItemId: current.mediaItemId,
-        channelNumber: String(current.channelNumber ?? channelNumber),
-        channelName: current.channelName || undefined,
-      };
-    }
-
-    throw new Error(
-      `No current schedule item for channel ${channelNumber} (pass mediaItemId to override)`,
-    );
-  } finally {
-    db.close();
-  }
+  throw new Error("channelNumber or mediaItemId is required");
 }
 
 /** Render a bar-only Now/Mid/Next overlay PNG for ETV graphics. */
@@ -315,12 +356,16 @@ export async function renderGraphicsOverlayPng(
     ...hints,
     channelNumber: hints.channelNumber || resolved.channelNumber,
     channelName: hints.channelName || resolved.channelName,
+    at: resolved.atUtcIso,
   };
 
   const db = openDb(settings.etvDatabase, true);
   let ctx;
   try {
-    ctx = getGraphicsMediaContext(db, mediaItemId);
+    ctx = getGraphicsMediaContext(db, mediaItemId, {
+      channelNumber: hintsWithChannel.channelNumber,
+      atUtcIso: hintsWithChannel.at,
+    });
   } finally {
     db.close();
   }

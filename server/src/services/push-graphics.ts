@@ -1,4 +1,4 @@
-import { AppSettings, JobLogLevel } from "@promo/shared";
+import { AppSettings, GraphicsTemplateSlot, JobLogLevel } from "@promo/shared";
 import fs from "node:fs";
 import { loadChannelOverrides } from "../config.js";
 import {
@@ -6,15 +6,17 @@ import {
   deleteGraphicsElementByPath,
   detachGraphicsFromScheduleItems,
   getPlayoutForChannel,
-  LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
   listChannelNumbers,
   openDb,
-  PROMO_GRAPHICS_TEMPLATE_PATHS,
   resetSchemaCache,
   upsertGraphicsElement,
 } from "../ersatztv/db.js";
 import { createLogger } from "../util/log.js";
-import { writeGraphicsTemplates } from "./graphics-yml.js";
+import {
+  channelGraphicsTemplatePath,
+  enabledGraphicsSlots,
+  writeGraphicsTemplates,
+} from "./graphics-yml.js";
 
 const log = createLogger("push-graphics");
 
@@ -61,21 +63,18 @@ async function withWriteDb<T>(
     : new Error(String(lastErr ?? "DB write failed"));
 }
 
-const SLOT_NAMES: Record<keyof typeof PROMO_GRAPHICS_TEMPLATE_PATHS, string> = {
-  now: "Promo Generator — Now",
-  midNow: "Promo Generator — Mid Now",
-  midNext: "Promo Generator — Mid Next",
-  next: "Promo Generator — Next",
+const SLOT_LABELS: Record<GraphicsTemplateSlot, string> = {
+  now: "Now",
+  midNow: "Mid Now",
+  midNext: "Mid Next",
+  next: "Next",
 };
 
-function slotEnabled(
-  slot: keyof typeof PROMO_GRAPHICS_TEMPLATE_PATHS,
-  settings: AppSettings,
-): boolean {
-  if (slot === "now") return settings.graphicsNowEnabled;
-  if (slot === "next") return settings.graphicsNextEnabled;
-
-  return settings.graphicsMidEnabled;
+function graphicsElementName(
+  channelNumber: string,
+  slot: GraphicsTemplateSlot,
+): string {
+  return `Promo Generator — ${SLOT_LABELS[slot]} (#${channelNumber})`;
 }
 
 function graphicsElementIdsByPaths(
@@ -94,7 +93,37 @@ function graphicsElementIdsByPaths(
   return ids;
 }
 
-/** Deploy Now/Mid/Next graphics templates and attach to classic schedules. */
+/** All GraphicsElement rows we manage (shared legacy + per-channel). */
+function listManagedGraphicsPaths(db: ReturnType<typeof openDb>): string[] {
+  const rows = db
+    .prepare(
+      `SELECT Path AS path FROM GraphicsElement
+       WHERE Path LIKE 'image/promo-gen%'`,
+    )
+    .all() as Array<{ path: string }>;
+
+  return rows.map((r) => r.path);
+}
+
+function resolveTargetChannels(settings: AppSettings): string[] {
+  const overrides = loadChannelOverrides();
+  let targets = Object.entries(overrides)
+    .filter(([, o]) => o.enabled !== false)
+    .map(([number]) => number);
+
+  if (targets.length === 0) {
+    const db = openDb(settings.etvDatabase, true);
+    try {
+      targets = listChannelNumbers(db).map((c) => c.number);
+    } finally {
+      db.close();
+    }
+  }
+
+  return targets;
+}
+
+/** Deploy per-channel Now/Mid/Next graphics and attach to classic schedules. */
 export async function pushGraphicsToErsatzTv(
   settings: AppSettings,
   progress: GraphicsProgress = () => undefined,
@@ -118,76 +147,61 @@ export async function pushGraphicsToErsatzTv(
   }
 
   resetSchemaCache();
-  progress("Writing graphics element YAML templates");
-  const { written, removed } = writeGraphicsTemplates(settings);
+  const targets = resolveTargetChannels(settings);
+  const slots = enabledGraphicsSlots(settings);
+
   progress(
-    `Templates written: ${written.length ? written.join(", ") : "(none)"}` +
-      (removed.length ? `; removed: ${removed.join(", ")}` : ""),
+    `Writing per-channel graphics templates for ${targets.length} channel(s)`,
   );
 
-  const enabledSlots = (
-    Object.keys(PROMO_GRAPHICS_TEMPLATE_PATHS) as Array<
-      keyof typeof PROMO_GRAPHICS_TEMPLATE_PATHS
-    >
-  ).filter((slot) => slotEnabled(slot, settings));
+  const { written, removed } = writeGraphicsTemplates(settings, targets);
+  progress(
+    `Templates written: ${written.length}` +
+      (removed.length ? `; removed: ${removed.length}` : ""),
+  );
 
-  const disabledPaths = [
-    ...(
-      Object.keys(PROMO_GRAPHICS_TEMPLATE_PATHS) as Array<
-        keyof typeof PROMO_GRAPHICS_TEMPLATE_PATHS
-      >
-    )
-      .filter((slot) => !enabledSlots.includes(slot))
-      .map((slot) => PROMO_GRAPHICS_TEMPLATE_PATHS[slot]),
-    ...LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
-  ];
+  progress(`Upserting GraphicsElement rows (${slots.length} slot(s) each)`);
+  const channelElementIds = new Map<string, number[]>();
 
-  const enabledIds = await withWriteDb(settings.etvDatabase, progress, (db) => {
-    // Capture prior managed ids (including disabled/legacy) so we can detach.
-    const managedPaths = [
-      ...Object.values(PROMO_GRAPHICS_TEMPLATE_PATHS),
-      ...LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
-    ];
+  await withWriteDb(settings.etvDatabase, progress, (db) => {
+    const priorManaged = listManagedGraphicsPaths(db);
+    const keepPaths = new Set<string>();
 
-    const priorIds = graphicsElementIdsByPaths(db, managedPaths);
+    for (const channelNumber of targets) {
+      const ids: number[] = [];
+      for (const slot of slots) {
+        const rel = channelGraphicsTemplatePath(channelNumber, slot);
+        keepPaths.add(rel);
+        const upserted = upsertGraphicsElement(
+          db,
+          rel,
+          graphicsElementName(channelNumber, slot),
+        );
 
-    const ids: number[] = [];
-    for (const slot of enabledSlots) {
-      const rel = PROMO_GRAPHICS_TEMPLATE_PATHS[slot];
-      const upserted = upsertGraphicsElement(db, rel, SLOT_NAMES[slot]);
-      ids.push(upserted.id);
-      progress(
-        `${upserted.created ? "Created" : "Updated"} GraphicsElement ${rel} (id=${upserted.id})`,
-      );
+        ids.push(upserted.id);
+        progress(
+          `  #${channelNumber} ${slot}: ${upserted.created ? "created" : "updated"} id=${upserted.id}`,
+        );
+      }
+
+      channelElementIds.set(channelNumber, ids);
     }
 
-    // Stash prior+enabled ids on the db handle via return payload.
-    (db as unknown as { __priorIds?: number[] }).__priorIds = [
-      ...new Set([...priorIds, ...ids]),
-    ];
+    // Drop GraphicsElement rows for stale/shared templates we no longer keep.
+    for (const rel of priorManaged) {
+      if (keepPaths.has(rel)) continue;
 
-    return ids;
+      deleteGraphicsElementByPath(db, rel);
+      progress(`Removed GraphicsElement ${rel}`);
+    }
   });
-
-  const overrides = loadChannelOverrides();
-  let targets = Object.entries(overrides)
-    .filter(([, o]) => o.enabled !== false)
-    .map(([number]) => number);
-
-  if (targets.length === 0) {
-    const db = openDb(settings.etvDatabase, true);
-    try {
-      targets = listChannelNumbers(db).map((c) => c.number);
-    } finally {
-      db.close();
-    }
-  }
 
   progress(`Attaching graphics to ${targets.length} channel schedule(s)`);
   let attachedSchedules = 0;
   let totalLinks = 0;
 
   for (const channelNumber of targets) {
+    const enabledIds = channelElementIds.get(channelNumber) ?? [];
     const applied = await withWriteDb(settings.etvDatabase, progress, (db) => {
       const playout = getPlayoutForChannel(db, channelNumber);
       if (!playout?.programScheduleId) {
@@ -201,16 +215,21 @@ export async function pushGraphicsToErsatzTv(
         };
       }
 
-      const managedIds = graphicsElementIdsByPaths(db, [
-        ...Object.values(PROMO_GRAPHICS_TEMPLATE_PATHS),
-        ...LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
-      ]);
+      // Detach any promo-gen links (including other channels' leftovers).
+      const managedIds = graphicsElementIdsByPaths(
+        db,
+        listManagedGraphicsPaths(db),
+      );
 
       detachGraphicsFromScheduleItems(
         db,
         playout.programScheduleId,
         managedIds,
       );
+
+      if (enabledIds.length === 0) {
+        return { skipped: false as const, items: 0, links: 0 };
+      }
 
       const { items, links } = attachGraphicsToScheduleItems(
         db,
@@ -229,17 +248,8 @@ export async function pushGraphicsToErsatzTv(
     attachedSchedules += 1;
     totalLinks += applied.links;
     progress(
-      `  #${channelNumber}: ${applied.links} link(s) on ${applied.items} schedule item(s)`,
+      `  #${channelNumber}: ${applied.links} link(s) on ${applied.items} schedule item(s) · ${enabledIds.length} element(s)`,
     );
-  }
-
-  if (disabledPaths.length > 0) {
-    await withWriteDb(settings.etvDatabase, progress, (db) => {
-      for (const rel of disabledPaths) {
-        deleteGraphicsElementByPath(db, rel);
-        progress(`Removed GraphicsElement ${rel}`);
-      }
-    });
   }
 
   const message = `Graphics deploy complete · ${written.length} template(s) · ${attachedSchedules} schedule(s) · ${totalLinks} link(s)`;

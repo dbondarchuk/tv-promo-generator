@@ -1366,15 +1366,100 @@ export interface GraphicsMediaContext {
   nextEpisodeNumber?: number;
 }
 
-/** Resolve media item + channel + next primary for graphics overlays. */
+/**
+ * Resolve media item + channel + next primary for graphics overlays.
+ * Prefer channelNumber + atUtcIso so now/next match the ETV session
+ * (including playback troubleshooting at a historical time).
+ */
 export function getGraphicsMediaContext(
   db: Database.Database,
   mediaItemId: number,
+  opts?: { channelNumber?: string; atUtcIso?: string },
 ): GraphicsMediaContext | undefined {
   const schema = loadSchema(db);
   const mediaFileTable = pickMediaFileTable(schema);
   requireColumns(schema, mediaFileTable, ["Path", "MediaVersionId"]);
   requireColumns(schema, "MediaVersion", ["Id"]);
+
+  const channelHint = opts?.channelNumber?.trim();
+  const atUtcIso = opts?.atUtcIso?.trim();
+
+  let channelNumber: string | undefined = channelHint;
+  let channelName: string | undefined;
+  let nextMediaItemId: number | undefined;
+  let nextTitle: string | undefined;
+  let nextEpisodeTitle: string | undefined;
+  let nextSeasonNumber: number | undefined;
+  let nextEpisodeNumber: number | undefined;
+  let resolvedMediaItemId = mediaItemId;
+
+  if (schema.tables.has("PlayoutItem")) {
+    let finish: string | undefined;
+
+    if (channelHint && atUtcIso) {
+      const atRow = getCurrentPrimaryItem(db, channelHint, atUtcIso);
+      if (atRow?.mediaItemId) {
+        resolvedMediaItemId = atRow.mediaItemId;
+        channelNumber = String(atRow.channelNumber ?? channelHint);
+        channelName = atRow.channelName || undefined;
+        finish = atRow.finish;
+      }
+    }
+
+    if (!finish) {
+      const nowRow = db
+        .prepare(
+          `
+          SELECT
+            c.Number AS channelNumber,
+            c.Name AS channelName,
+            pi.Finish AS finish
+          FROM PlayoutItem pi
+          INNER JOIN Playout p ON p.Id = pi.PlayoutId
+          INNER JOIN Channel c ON c.Id = p.ChannelId
+          WHERE pi.MediaItemId = ?
+            AND COALESCE(pi.FillerKind, 0) = 0
+            ${channelHint ? "AND c.Number = ?" : ""}
+          ORDER BY pi.Start DESC
+          LIMIT 1
+        `,
+        )
+        .get(
+          ...(channelHint
+            ? [resolvedMediaItemId, channelHint]
+            : [resolvedMediaItemId]),
+        ) as
+        | { channelNumber?: string; channelName?: string; finish?: string }
+        | undefined;
+
+      channelNumber = nowRow?.channelNumber
+        ? String(nowRow.channelNumber)
+        : channelHint || undefined;
+
+      channelName = nowRow?.channelName || channelName;
+      finish = nowRow?.finish;
+    }
+
+    if (channelNumber && finish) {
+      const next = getPrimaryItemsAfter(db, channelNumber, finish, 1)[0];
+      if (next) {
+        nextMediaItemId = next.mediaItemId;
+        const nextMeta =
+          getMediaItemMetadata(db, next.mediaItemId) ||
+          metadataFromFilePath(next.filePath);
+
+        nextTitle =
+          nextMeta?.title ||
+          (next.filePath
+            ? path.basename(next.filePath)
+            : `Item ${next.mediaItemId}`);
+
+        nextEpisodeTitle = nextMeta?.episodeTitle;
+        nextSeasonNumber = nextMeta?.seasonNumber;
+        nextEpisodeNumber = nextMeta?.episodeNumber;
+      }
+    }
+  }
 
   const mediaItemExpr = mediaVersionMediaItemIdExpr(schema);
   const fileRow = db
@@ -1387,14 +1472,18 @@ export function getGraphicsMediaContext(
       LIMIT 1
     `,
     )
-    .get(mediaItemId) as { mediaItemId: number; path?: string } | undefined;
+    .get(resolvedMediaItemId) as
+    | { mediaItemId: number; path?: string }
+    | undefined;
 
-  const meta = getMediaItemMetadata(db, mediaItemId);
+  const meta = getMediaItemMetadata(db, resolvedMediaItemId);
   const fromPath = metadataFromFilePath(fileRow?.path);
   const title =
     meta?.title ||
     fromPath?.title ||
-    (fileRow?.path ? path.basename(fileRow.path) : `Item ${mediaItemId}`);
+    (fileRow?.path
+      ? path.basename(fileRow.path)
+      : `Item ${resolvedMediaItemId}`);
 
   const episodeTitle = meta?.episodeTitle || fromPath?.episodeTitle;
   const seasonNumber = meta?.seasonNumber ?? fromPath?.seasonNumber;
@@ -1458,9 +1547,14 @@ export function getGraphicsMediaContext(
           LIMIT 1
         `;
 
-        const params = [ARTWORK_KIND_POSTER, ...joins.map(() => mediaItemId)];
+        const params = [
+          ARTWORK_KIND_POSTER,
+          ...joins.map(() => resolvedMediaItemId),
+        ];
+
         const art = db.prepare(sql).get(...params) as
-          { hashPath?: string; sourcePath?: string } | undefined;
+          | { hashPath?: string; sourcePath?: string }
+          | undefined;
 
         artworkSourcePath = art?.sourcePath || undefined;
         artworkHashPath = art?.hashPath || undefined;
@@ -1468,64 +1562,8 @@ export function getGraphicsMediaContext(
     }
   }
 
-  let channelNumber: string | undefined;
-  let channelName: string | undefined;
-  let nextMediaItemId: number | undefined;
-  let nextTitle: string | undefined;
-  let nextEpisodeTitle: string | undefined;
-  let nextSeasonNumber: number | undefined;
-  let nextEpisodeNumber: number | undefined;
-
-  if (schema.tables.has("PlayoutItem")) {
-    const nowRow = db
-      .prepare(
-        `
-        SELECT
-          c.Number AS channelNumber,
-          c.Name AS channelName,
-          pi.Finish AS finish
-        FROM PlayoutItem pi
-        INNER JOIN Playout p ON p.Id = pi.PlayoutId
-        INNER JOIN Channel c ON c.Id = p.ChannelId
-        WHERE pi.MediaItemId = ?
-          AND COALESCE(pi.FillerKind, 0) = 0
-        ORDER BY pi.Start DESC
-        LIMIT 1
-      `,
-      )
-      .get(mediaItemId) as
-      | { channelNumber?: string; channelName?: string; finish?: string }
-      | undefined;
-
-    channelNumber = nowRow?.channelNumber
-      ? String(nowRow.channelNumber)
-      : undefined;
-
-    channelName = nowRow?.channelName || undefined;
-
-    if (channelNumber && nowRow?.finish) {
-      const next = getPrimaryItemsAfter(db, channelNumber, nowRow.finish, 1)[0];
-      if (next) {
-        nextMediaItemId = next.mediaItemId;
-        const nextMeta =
-          getMediaItemMetadata(db, next.mediaItemId) ||
-          metadataFromFilePath(next.filePath);
-
-        nextTitle =
-          nextMeta?.title ||
-          (next.filePath
-            ? path.basename(next.filePath)
-            : `Item ${next.mediaItemId}`);
-
-        nextEpisodeTitle = nextMeta?.episodeTitle;
-        nextSeasonNumber = nextMeta?.seasonNumber;
-        nextEpisodeNumber = nextMeta?.episodeNumber;
-      }
-    }
-  }
-
   return {
-    mediaItemId,
+    mediaItemId: resolvedMediaItemId,
     title,
     episodeTitle,
     seasonNumber,

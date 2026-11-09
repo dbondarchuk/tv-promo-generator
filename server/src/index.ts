@@ -17,6 +17,7 @@ import { JobQueue } from "./services/jobs.js";
 import { setLivePromoJobs } from "./services/livePromo.js";
 import { RegenScheduler } from "./services/scheduler.js";
 import { createLogger } from "./util/log.js";
+import { requestLogMiddleware } from "./util/request-log.js";
 
 loadEnv();
 
@@ -43,6 +44,7 @@ const scheduler = new RegenScheduler(() => settings, jobs);
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+app.use(requestLogMiddleware);
 
 app.use(
   "/api",

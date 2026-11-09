@@ -2,16 +2,36 @@ import {
   AppSettings,
   GraphicsPhase,
   GraphicsTemplateSlot,
+  sanitizeChannelFolderName,
 } from "@promo/shared";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
-  PROMO_GRAPHICS_TEMPLATE_PATHS,
-} from "../ersatztv/db.js";
+import { LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS } from "../ersatztv/db.js";
 
 export function graphicsElementsRoot(etvConfigPath: string): string {
   return path.join(etvConfigPath, "templates", "graphics-elements");
+}
+
+const SLOT_FILES: Record<GraphicsTemplateSlot, string> = {
+  now: "now.yml",
+  midNow: "mid-now.yml",
+  midNext: "mid-next.yml",
+  next: "next.yml",
+};
+
+/** Per-channel relative template path under graphics-elements. */
+export function channelGraphicsTemplatePath(
+  channelNumber: string,
+  slot: GraphicsTemplateSlot,
+): string {
+  const folder = sanitizeChannelFolderName(channelNumber);
+  return `image/promo-gen/${folder}/${SLOT_FILES[slot]}`;
+}
+
+export function channelGraphicsTemplatePaths(channelNumber: string): string[] {
+  return (Object.keys(SLOT_FILES) as GraphicsTemplateSlot[]).map((slot) =>
+    channelGraphicsTemplatePath(channelNumber, slot),
+  );
 }
 
 /** LinearFadePoints with fade-in at start and fade-out at end. */
@@ -27,7 +47,6 @@ function fadeWindowBeforeEnd(
   beforeEndFinish: number,
   fade: number,
 ): string {
-  // Visible from (total - beforeEndStart) … (total - beforeEndFinish).
   const start = `content_total_seconds - ${beforeEndStart}`;
   const peakStart = `content_total_seconds - ${Math.max(0, beforeEndStart - fade)}`;
   const peakEnd = `content_total_seconds - ${beforeEndFinish + fade}`;
@@ -53,7 +72,6 @@ function opacityExpression(
     return fadeWindowBeforeEnd(before + dur, before, fade);
   }
 
-  // Mid sequence: Now bumper, full fade-out, then Next bumper fade-in.
   const delay = settings.graphicsMidDelaySeconds;
   const dur = settings.graphicsMidDurationSeconds;
 
@@ -61,18 +79,21 @@ function opacityExpression(
     return fadeWindow(delay, delay + dur, fade);
   }
 
-  // midNext starts after midNow ends (sequential fade-out then fade-in).
   return fadeWindow(delay + dur, delay + 2 * dur, fade);
 }
 
-function overlayImageUrl(baseUrl: string, phase: GraphicsPhase): string {
+function overlayImageUrl(
+  baseUrl: string,
+  phase: GraphicsPhase,
+  channelNumber: string,
+): string {
   const base = baseUrl.replace(/\/+$/, "");
-  // MediaItem_Id from ETV playout context (accurate even if our DB lags).
-  // channelNumber remains for name/language/color; schedule fallback if id omitted.
+  // Channel baked into per-channel template (ETV has no Channel_Number).
+  // MediaItem_Start = content start — schedule lookup for now/next (troubleshoot-safe).
   return (
     `${base}/graphics/overlay.png?phase=${phase}` +
-    `&mediaItemId={{ MediaItem_Id }}` +
-    `&channelNumber={{ Channel_Number }}`
+    `&channelNumber=${encodeURIComponent(channelNumber)}` +
+    `&at={{ format_datetime MediaItem_Start "UTC" "o" | string.url_encode }}`
   );
 }
 
@@ -83,6 +104,7 @@ function imagePhaseForSlot(slot: GraphicsTemplateSlot): GraphicsPhase {
 export function buildGraphicsElementYaml(
   settings: AppSettings,
   slot: GraphicsTemplateSlot,
+  channelNumber: string,
 ): string {
   if (!settings.etvOnDemandBaseUrl?.trim()) {
     throw new Error("etvOnDemandBaseUrl is required for graphics overlays");
@@ -98,14 +120,13 @@ export function buildGraphicsElementYaml(
     `scale: true`,
     `scale_width_percent: 100`,
     `epg_entries: 1`,
-    `image: "${overlayImageUrl(settings.etvOnDemandBaseUrl, phase)}"`,
+    `image: "${overlayImageUrl(settings.etvOnDemandBaseUrl, phase, channelNumber)}"`,
     "",
   ];
 
   return lines.join("\n");
 }
 
-/** Remove disk still cache from the first overlay implementation (now piped). */
 function cleanupLegacyStillCache(cachePath: string): void {
   if (!cachePath) return;
 
@@ -115,7 +136,7 @@ function cleanupLegacyStillCache(cachePath: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-function slotEnabled(
+export function slotEnabled(
   slot: GraphicsTemplateSlot,
   settings: AppSettings,
 ): boolean {
@@ -125,43 +146,104 @@ function slotEnabled(
   return settings.graphicsMidEnabled;
 }
 
-export function writeGraphicsTemplates(settings: AppSettings): {
-  written: string[];
-  removed: string[];
-} {
-  cleanupLegacyStillCache(settings.cachePath);
+export function enabledGraphicsSlots(
+  settings: AppSettings,
+): GraphicsTemplateSlot[] {
+  return (Object.keys(SLOT_FILES) as GraphicsTemplateSlot[]).filter((slot) =>
+    slotEnabled(slot, settings),
+  );
+}
 
-  const root = graphicsElementsRoot(settings.etvConfigPath);
-  fs.mkdirSync(path.join(root, "image"), { recursive: true });
-
-  const written: string[] = [];
+/** Remove shared (non-per-channel) templates from earlier iterations. */
+function cleanupSharedLegacyTemplates(root: string): string[] {
   const removed: string[] = [];
+  const shared = [
+    ...LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
+    "image/promo-gen-now.yml",
+    "image/promo-gen-mid-now.yml",
+    "image/promo-gen-mid-next.yml",
+    "image/promo-gen-next.yml",
+  ];
 
-  for (const slot of Object.keys(
-    PROMO_GRAPHICS_TEMPLATE_PATHS,
-  ) as GraphicsTemplateSlot[]) {
-    const rel = PROMO_GRAPHICS_TEMPLATE_PATHS[slot];
-    const abs = path.join(root, rel);
-    if (!slotEnabled(slot, settings)) {
-      if (fs.existsSync(abs)) {
-        fs.unlinkSync(abs);
-        removed.push(rel);
-      }
-
-      continue;
-    }
-
-    fs.writeFileSync(abs, buildGraphicsElementYaml(settings, slot), "utf8");
-    written.push(rel);
-  }
-
-  for (const rel of LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS) {
+  for (const rel of shared) {
     const abs = path.join(root, rel);
     if (fs.existsSync(abs)) {
       fs.unlinkSync(abs);
       removed.push(rel);
     }
   }
+
+  return removed;
+}
+
+/** Remove per-channel template folders that are no longer targeted. */
+function cleanupStaleChannelFolders(
+  root: string,
+  keepChannelFolders: Set<string>,
+): string[] {
+  const removed: string[] = [];
+  const promoRoot = path.join(root, "image", "promo-gen");
+  if (!fs.existsSync(promoRoot)) return removed;
+
+  for (const entry of fs.readdirSync(promoRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (keepChannelFolders.has(entry.name)) continue;
+
+    const abs = path.join(promoRoot, entry.name);
+    fs.rmSync(abs, { recursive: true, force: true });
+    removed.push(`image/promo-gen/${entry.name}/`);
+  }
+
+  return removed;
+}
+
+export function writeGraphicsTemplates(
+  settings: AppSettings,
+  channelNumbers: string[],
+): { written: string[]; removed: string[] } {
+  cleanupLegacyStillCache(settings.cachePath);
+
+  const root = graphicsElementsRoot(settings.etvConfigPath);
+  fs.mkdirSync(path.join(root, "image", "promo-gen"), { recursive: true });
+
+  const written: string[] = [];
+  const removed: string[] = [...cleanupSharedLegacyTemplates(root)];
+
+  const keepFolders = new Set(
+    channelNumbers.map((n) => sanitizeChannelFolderName(n)),
+  );
+
+  const slots = enabledGraphicsSlots(settings);
+  const allSlots = Object.keys(SLOT_FILES) as GraphicsTemplateSlot[];
+
+  for (const channelNumber of channelNumbers) {
+    const folder = sanitizeChannelFolderName(channelNumber);
+    const dir = path.join(root, "image", "promo-gen", folder);
+    fs.mkdirSync(dir, { recursive: true });
+
+    for (const slot of allSlots) {
+      const rel = channelGraphicsTemplatePath(channelNumber, slot);
+      const abs = path.join(root, rel);
+      if (!slots.includes(slot)) {
+        if (fs.existsSync(abs)) {
+          fs.unlinkSync(abs);
+          removed.push(rel);
+        }
+
+        continue;
+      }
+
+      fs.writeFileSync(
+        abs,
+        buildGraphicsElementYaml(settings, slot, channelNumber),
+        "utf8",
+      );
+
+      written.push(rel);
+    }
+  }
+
+  removed.push(...cleanupStaleChannelFolders(root, keepFolders));
 
   return { written, removed };
 }
