@@ -168,12 +168,11 @@ export async function downloadLogo(
   }
 }
 
-export async function createLowerThirdBar(
+function lowerThirdBarRaw(
   width: number,
   height: number,
   colorHex: string,
-  destPath: string,
-): Promise<string> {
+): Buffer {
   const hex = colorHex.replace("#", "");
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
@@ -191,6 +190,28 @@ export async function createLowerThirdBar(
     }
   }
 
+  return raw;
+}
+
+/** In-memory lower-third bar PNG (no disk write). */
+export async function createLowerThirdBarBuffer(
+  width: number,
+  height: number,
+  colorHex: string,
+): Promise<Buffer> {
+  const raw = lowerThirdBarRaw(width, height, colorHex);
+  return sharp(raw, { raw: { width, height, channels: 4 } })
+    .png()
+    .toBuffer();
+}
+
+export async function createLowerThirdBar(
+  width: number,
+  height: number,
+  colorHex: string,
+  destPath: string,
+): Promise<string> {
+  const raw = lowerThirdBarRaw(width, height, colorHex);
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   await sharp(raw, { raw: { width, height, channels: 4 } })
     .png()

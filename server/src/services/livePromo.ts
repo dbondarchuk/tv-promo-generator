@@ -502,13 +502,8 @@ export async function serveLiveMpegTs(
       if (readable > 0) {
         let left = readable;
         while (left > 0 && !res.writableEnded && !res.destroyed) {
-          const n = fs.readSync(
-            fd,
-            buf,
-            0,
-            Math.min(buf.length, left),
-            offset,
-          );
+          const n = fs.readSync(fd, buf, 0, Math.min(buf.length, left), offset);
+
           if (n <= 0) break;
 
           offset += n;

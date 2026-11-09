@@ -7,7 +7,12 @@ import { fileURLToPath } from "node:url";
 import { loadSettings } from "./config.js";
 import { loadEnv } from "./env.js";
 import { assertFfmpegAvailable } from "./ffmpeg/binaries.js";
-import { createLiveRouter, createMediaRouter, createRouter } from "./routes.js";
+import {
+  createGraphicsRouter,
+  createLiveRouter,
+  createMediaRouter,
+  createRouter,
+} from "./routes.js";
 import { JobQueue } from "./services/jobs.js";
 import { setLivePromoJobs } from "./services/livePromo.js";
 import { RegenScheduler } from "./services/scheduler.js";
@@ -60,6 +65,11 @@ app.use(
   createLiveRouter(() => settings),
 );
 
+app.use(
+  "/graphics",
+  createGraphicsRouter(() => settings),
+);
+
 const clientDist = path.resolve(__dirname, "../../client/dist");
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
@@ -67,7 +77,8 @@ if (fs.existsSync(clientDist)) {
     if (
       req.path.startsWith("/api") ||
       req.path.startsWith("/media") ||
-      req.path.startsWith("/live")
+      req.path.startsWith("/live") ||
+      req.path.startsWith("/graphics")
     ) {
       return next();
     }

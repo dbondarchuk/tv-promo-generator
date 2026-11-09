@@ -2,6 +2,7 @@ import {
   AppSettings,
   FILLER_PLACEMENTS,
   FillerPlacement,
+  GraphicsPhase,
   isFillerPlacement,
   isPushOptionsActionable,
   PushOptions,
@@ -30,6 +31,7 @@ import {
   getLatestPushBackup,
   listErsatzTvBackups,
 } from "./services/etv-backup.js";
+import { renderGraphicsOverlayPng } from "./services/graphics-overlay.js";
 import { JobQueue } from "./services/jobs.js";
 import { serveLiveMpegTs } from "./services/livePromo.js";
 import { validateSettings } from "./services/validate-settings.js";
@@ -38,6 +40,10 @@ import {
   ensureConfiguredPiperVoices,
   invalidatePiperVoiceCache,
 } from "./voice/tts.js";
+
+function isGraphicsPhase(value: unknown): value is GraphicsPhase {
+  return value === "now" || value === "next";
+}
 
 const log = createLogger("http");
 
@@ -494,6 +500,86 @@ export function createRouter(opts: {
       res
         .status(500)
         .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/push-graphics", (_req, res) => {
+    try {
+      log.info("enqueue push graphics");
+      const job = opts.jobs.enqueuePushGraphics();
+      res.json({ job });
+    } catch (err) {
+      log.error(
+        "POST /push-graphics failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  return router;
+}
+
+/** On-demand Now/Mid/Next overlay PNGs for ETV graphics engine. */
+export function createGraphicsRouter(getSettings: () => AppSettings): Router {
+  const router = Router();
+
+  router.get("/overlay.png", async (req, res) => {
+    try {
+      const settings = getSettings();
+      const phaseRaw = String(req.query.phase ?? "now");
+      if (!isGraphicsPhase(phaseRaw)) {
+        res.status(400).type("text/plain").send("phase must be now|next");
+        return;
+      }
+
+      const mediaItemRaw = Number(req.query.mediaItemId);
+      const mediaItemId =
+        Number.isFinite(mediaItemRaw) && mediaItemRaw > 0
+          ? mediaItemRaw
+          : undefined;
+
+      const channelNumber =
+        typeof req.query.channelNumber === "string"
+          ? req.query.channelNumber
+          : undefined;
+
+      const channelName =
+        typeof req.query.channelName === "string"
+          ? req.query.channelName
+          : undefined;
+
+      const language =
+        typeof req.query.language === "string" ? req.query.language : undefined;
+
+      if (!mediaItemId && !channelNumber?.trim()) {
+        res
+          .status(400)
+          .type("text/plain")
+          .send("channelNumber or mediaItemId is required");
+
+        return;
+      }
+
+      const png = await renderGraphicsOverlayPng(settings, phaseRaw, {
+        mediaItemId,
+        channelNumber,
+        channelName,
+        language,
+      });
+
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "private, max-age=60");
+      res.send(png);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("GET /graphics/overlay.png failed", message);
+      if (!res.headersSent) {
+        res.status(500).type("text/plain").send(message);
+      }
     }
   });
 

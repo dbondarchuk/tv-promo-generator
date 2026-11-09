@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  GraphicsImageSource,
   HardwareAcceleration,
   PromoDeliveryMode,
   PromoItemCount,
@@ -11,6 +12,8 @@ import type {
 } from "@promo/shared";
 import {
   CHANNEL_LANGUAGES,
+  GRAPHICS_IMAGE_SOURCE_LABELS,
+  GRAPHICS_IMAGE_SOURCES,
   PROMO_DELIVERY_MODE_LABELS,
   PROMO_DELIVERY_MODES,
   PROMO_ITEM_COUNTS,
@@ -218,6 +221,12 @@ export function SettingsPage() {
             )}
           {field("regenLeadMinutes", "Regen lead time (minutes)", "number")}
           {field("timeZone", "Display timezone (IANA, e.g. America/New_York)")}
+          {field(
+            "etvConfigPath",
+            "ErsatzTV config path (templates/graphics-elements)",
+            "text",
+            "/root/.local/share/ersatztv",
+          )}
         </div>
         <p className="muted">
           {settings.promoDeliveryMode === "file" ? (
@@ -315,7 +324,7 @@ export function SettingsPage() {
       </section>
 
       <section>
-        <h2>Graphics</h2>
+        <h2>Promo video</h2>
         <div className="settings-grid">
           <label>
             Items in promo
@@ -355,6 +364,116 @@ export function SettingsPage() {
             </select>
           </label>
         </div>
+        <p className="muted">
+          Applies to the next-items promo video (Generate / live remote stream),
+          not channel Now/Mid/Next overlays.
+        </p>
+      </section>
+
+      <section>
+        <h2>Channel graphics</h2>
+        <div className="settings-grid">
+          <label>
+            Overlay image
+            <select
+              value={settings.graphicsImageSource ?? "artwork"}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  graphicsImageSource: e.target.value as GraphicsImageSource,
+                });
+
+                setValidation(null);
+              }}
+            >
+              {GRAPHICS_IMAGE_SOURCES.map((src) => (
+                <option key={src} value={src}>
+                  {GRAPHICS_IMAGE_SOURCE_LABELS[src]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {field(
+            "graphicsBarHeightPercent",
+            "Overlay bar height (% of frame)",
+            "number",
+          )}
+          {field("graphicsFadeSeconds", "Fade in/out (seconds)", "number")}
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.graphicsNowEnabled ?? true}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  graphicsNowEnabled: e.target.checked,
+                });
+
+                setValidation(null);
+              }}
+            />
+            Now bumper (after start)
+          </label>
+          {field("graphicsNowDelaySeconds", "Now delay (seconds)", "number")}
+          {field(
+            "graphicsNowDurationSeconds",
+            "Now duration (seconds)",
+            "number",
+          )}
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.graphicsMidEnabled ?? true}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  graphicsMidEnabled: e.target.checked,
+                });
+
+                setValidation(null);
+              }}
+            />
+            Mid sequence (Now → fade → Next)
+          </label>
+          {field("graphicsMidDelaySeconds", "Mid delay (seconds)", "number")}
+          {field(
+            "graphicsMidDurationSeconds",
+            "Mid bumper duration each (seconds)",
+            "number",
+          )}
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings.graphicsNextEnabled ?? true}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  graphicsNextEnabled: e.target.checked,
+                });
+
+                setValidation(null);
+              }}
+            />
+            Next bumper (before end)
+          </label>
+          {field(
+            "graphicsNextBeforeEndSeconds",
+            "Next before-end (seconds)",
+            "number",
+          )}
+          {field(
+            "graphicsNextDurationSeconds",
+            "Next duration (seconds)",
+            "number",
+          )}
+        </div>
+        <p className="muted">
+          Channel overlays use ErsatzTV&apos;s graphics engine with{" "}
+          <strong>fade in/out</strong> via opacity expressions. Mid deploys two
+          templates that reuse the Now/Next images: Now plays first, fades out,
+          then Next fades in. Set <strong>ErsatzTV config path</strong> and use{" "}
+          <strong>Push Graphics</strong> on the Channels page to deploy.
+        </p>
       </section>
 
       <section>

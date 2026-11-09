@@ -235,6 +235,31 @@ export async function validateSettings(
     }
   }
 
+  const etvConfig = settings.etvConfigPath?.trim();
+  if (etvConfig) {
+    const templates = path.join(etvConfig, "templates", "graphics-elements");
+
+    checks.push(
+      check(
+        "etvConfigPath",
+        "ETV config path",
+        fs.existsSync(etvConfig),
+        fs.existsSync(etvConfig)
+          ? `OK · graphics templates → ${templates}`
+          : `Not found: ${etvConfig}`,
+      ),
+    );
+  } else {
+    checks.push(
+      check(
+        "etvConfigPath",
+        "ETV config path",
+        true,
+        "Not set (required for Push Graphics)",
+      ),
+    );
+  }
+
   if (settings.etvPathPrefix && !settings.libraryPath) {
     checks.push(
       check(

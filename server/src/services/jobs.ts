@@ -24,11 +24,12 @@ import {
   promoWindowFingerprint,
   promoWindowsFromPrimaries,
 } from "./fingerprint.js";
+import { pushGraphicsToErsatzTv } from "./push-graphics.js";
 import { pushToErsatzTv } from "./push.js";
 
 const log = createLogger("jobs");
 const MAX_LOGS_PER_JOB = 400;
-const BLOCKING_KINDS: JobKind[] = ["push", "rollback"];
+const BLOCKING_KINDS: JobKind[] = ["push", "push-graphics", "rollback"];
 
 /** Waiting or in-flight — includes legacy status "late" used as a queue state. */
 function isPendingStatus(status: JobInfo["status"]): boolean {
@@ -257,6 +258,15 @@ export class JobQueue {
     });
   }
 
+  enqueuePushGraphics(): JobInfo {
+    return this.enqueueBlocking({
+      kind: "push-graphics",
+      channelNumber: "push-graphics",
+      channelName: "Push Graphics",
+      pauseMessage: "Paused — waiting for Push Graphics to finish",
+    });
+  }
+
   enqueueRollback(backupId?: string): JobInfo {
     return this.enqueueBlocking({
       kind: "rollback",
@@ -344,7 +354,7 @@ export class JobQueue {
   }
 
   private enqueueBlocking(opts: {
-    kind: "push" | "rollback";
+    kind: "push" | "push-graphics" | "rollback";
     channelNumber: string;
     channelName: string;
     backupId?: string;
@@ -540,6 +550,8 @@ export class JobQueue {
     try {
       if (job.kind === "push") {
         await this.runPushJob(job);
+      } else if (job.kind === "push-graphics") {
+        await this.runPushGraphicsJob(job);
       } else if (job.kind === "rollback") {
         await this.runRollbackJob(job);
       } else if (job.kind === "vo-prewarm") {
@@ -710,6 +722,24 @@ export class JobQueue {
     );
 
     fs.rmSync(workDir, { recursive: true, force: true });
+  }
+
+  private async runPushGraphicsJob(job: InternalJob): Promise<void> {
+    const settings = this.settingsProvider();
+    const onProgress = (message: string, level: JobLogLevel = "info") => {
+      this.appendLog(job.id, level, message);
+    };
+
+    const result = await pushGraphicsToErsatzTv(settings, onProgress);
+    job.finishedAt = new Date().toISOString();
+    if (result.ok) {
+      job.status = "succeeded";
+      this.appendLog(job.id, "info", result.message, false);
+    } else {
+      job.status = "failed";
+      job.error = result.message;
+      this.appendLog(job.id, "error", result.message, false);
+    }
   }
 
   private async runPushJob(job: InternalJob): Promise<void> {

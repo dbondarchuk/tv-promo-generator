@@ -75,6 +75,31 @@ export function isPromoDeliveryMode(
   );
 }
 
+/** Right-side image for channel Now/Next graphics overlays. */
+export const GRAPHICS_IMAGE_SOURCES = ["artwork", "still"] as const;
+export type GraphicsImageSource = (typeof GRAPHICS_IMAGE_SOURCES)[number];
+
+export const GRAPHICS_IMAGE_SOURCE_LABELS: Record<GraphicsImageSource, string> =
+  {
+    artwork: "Library artwork (poster)",
+    still: "Random still from video",
+  };
+
+export function isGraphicsImageSource(
+  value: unknown,
+): value is GraphicsImageSource {
+  return (
+    typeof value === "string" &&
+    (GRAPHICS_IMAGE_SOURCES as readonly string[]).includes(value)
+  );
+}
+
+/** Overlay PNG content phases (mid sequence reuses these images). */
+export type GraphicsPhase = "now" | "next";
+
+/** ETV graphics-element template slots we deploy. */
+export type GraphicsTemplateSlot = "now" | "midNow" | "midNext" | "next";
+
 export interface AppSettings {
   etvUrl: string;
   etvApiKey: string;
@@ -88,6 +113,11 @@ export interface AppSettings {
    * (e.g. http://tv-promo-generator:5174). Used in Remote Stream YAML.
    */
   etvOnDemandBaseUrl: string;
+  /**
+   * ErsatzTV config root containing `templates/graphics-elements`
+   * (host path writable from this app / bind-mounted into ETV).
+   */
+  etvConfigPath: string;
   /**
    * `file` — bake next-items.mp4 and push as Other Video.
    * `remote-stream` — write YAML + live MPEG-TS encode on play.
@@ -147,6 +177,28 @@ export interface AppSettings {
    * each item's voice-over finishes (stays in sync with the video window).
    */
   sourceAudioAfterVoice: boolean;
+  /** Prefer ETV poster artwork or a random video still for Now/Next bars. */
+  graphicsImageSource: GraphicsImageSource;
+  graphicsNowEnabled: boolean;
+  graphicsMidEnabled: boolean;
+  graphicsNextEnabled: boolean;
+  /** Seconds after content start before the Now bumper appears. */
+  graphicsNowDelaySeconds: number;
+  graphicsNowDurationSeconds: number;
+  /**
+   * Seconds after content start before the mid sequence
+   * (Now bumper → fade out → Next bumper → fade out).
+   */
+  graphicsMidDelaySeconds: number;
+  /** Duration of each bumper in the mid Now→Next sequence. */
+  graphicsMidDurationSeconds: number;
+  /** Seconds before content end when the Next bumper appears. */
+  graphicsNextBeforeEndSeconds: number;
+  graphicsNextDurationSeconds: number;
+  /** Fade-in / fade-out length for every graphics bumper. */
+  graphicsFadeSeconds: number;
+  /** Lower-third height as % of frame height (shorter than promo ~28). */
+  graphicsBarHeightPercent: number;
 }
 
 export interface ChannelOverride {
@@ -194,7 +246,12 @@ export const CHANNEL_LANGUAGES = [
 export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]["code"];
 
 export type JobKind =
-  "generate" | "vo-prewarm" | "push" | "rollback" | "live-stream";
+  | "generate"
+  | "vo-prewarm"
+  | "push"
+  | "push-graphics"
+  | "rollback"
+  | "live-stream";
 
 export type JobLogLevel = "info" | "warn" | "error";
 
@@ -336,6 +393,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   outputPath: "./output",
   etvLibraryPath: "",
   etvOnDemandBaseUrl: "",
+  etvConfigPath: "",
   promoDeliveryMode: "remote-stream",
   cachePath: "./cache",
   configPath: "./config",
@@ -366,6 +424,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ttsTimeoutMs: 20_000,
   sourceAudioVolume: 0,
   sourceAudioAfterVoice: true,
+  graphicsImageSource: "artwork",
+  graphicsNowEnabled: true,
+  graphicsMidEnabled: true,
+  graphicsNextEnabled: true,
+  graphicsNowDelaySeconds: 30,
+  graphicsNowDurationSeconds: 8,
+  graphicsMidDelaySeconds: 90,
+  graphicsMidDurationSeconds: 8,
+  graphicsNextBeforeEndSeconds: 30,
+  graphicsNextDurationSeconds: 8,
+  graphicsFadeSeconds: 1,
+  graphicsBarHeightPercent: 18,
 };
 
 export function parseResolution(resolution: string): {

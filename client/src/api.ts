@@ -105,6 +105,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(options),
     }),
+  pushGraphics: () =>
+    request<{ job: JobInfo }>("/api/push-graphics", {
+      method: "POST",
+      body: "{}",
+    }),
   listBackups: () =>
     request<{ backups: EtvBackupInfo[]; latestPush: EtvBackupInfo | null }>(
       "/api/backups",

@@ -20,6 +20,7 @@ export default defineConfig({
         },
       },
       "/media": "http://localhost:5174",
+      "/graphics": "http://localhost:5174",
       // Live MPEG-TS — must not buffer the whole response.
       "/live": {
         target: "http://localhost:5174",

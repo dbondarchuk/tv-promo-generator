@@ -177,6 +177,18 @@ a.button {
   background: #000;
   aspect-ratio: 16 / 9;
 }
+.graphics-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.graphics-preview-img {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #111;
+  display: block;
+}
 .live-preview {
   display: flex;
   flex-direction: column;

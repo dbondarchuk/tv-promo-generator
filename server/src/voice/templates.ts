@@ -14,13 +14,24 @@ export interface VoiceLineInput {
   showVoiceDetail?: ShowVoiceDetail;
 }
 
-export interface VoiceTemplate {
+/**
+ * Per-language copy for voice-over and on-screen/graphics overlays.
+ * (Name is intentionally not voice-only.)
+ */
+export interface CopyTemplate {
   language: string;
+  /** Preferred TTS voice id for this language (Piper / SAPI hint). */
   voice: string;
   /** Lead-in only: "Next on {channel}." */
   next: (channelName: string) => string;
   /** Lead-in only: "After that." (no channel name) */
   after: (channelName: string) => string;
+  /** Graphics / on-screen: "Now on {channel}:" */
+  nowOn: (channelName: string) => string;
+  /** Graphics / on-screen: "Next on {channel}:" */
+  nextOn: (channelName: string) => string;
+  /** On-screen: "Now: {item}" */
+  overlayNow: (itemName: string) => string;
   /** On-screen: "Next: {item}" */
   overlayNext: (itemName: string) => string;
   /** On-screen: "After that: {item}" */
@@ -41,12 +52,15 @@ export interface BuiltVoiceLine {
   language: string;
 }
 
-export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
+export const COPY_TEMPLATES: Record<string, CopyTemplate> = {
   en: {
     language: "en",
     voice: "en-US-GuyNeural",
     next: (c) => `Next on ${c}.`,
     after: () => "After that.",
+    nowOn: (c) => `Now on ${c}:`,
+    nextOn: (c) => `Next on ${c}:`,
+    overlayNow: (name) => `Now: ${name}`,
     overlayNext: (name) => `Next: ${name}`,
     overlayAfter: (name) => `After that: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -59,6 +73,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "es-ES-AlvaroNeural",
     next: (c) => `A continuación en ${c}.`,
     after: () => "Después.",
+    nowOn: (c) => `Ahora en ${c}:`,
+    nextOn: (c) => `A continuación en ${c}:`,
+    overlayNow: (name) => `Ahora: ${name}`,
     overlayNext: (name) => `A continuación: ${name}`,
     overlayAfter: (name) => `Después: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -71,6 +88,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "fr-FR-HenriNeural",
     next: (c) => `À suivre sur ${c}.`,
     after: () => "Ensuite.",
+    nowOn: (c) => `Maintenant sur ${c} :`,
+    nextOn: (c) => `À suivre sur ${c} :`,
+    overlayNow: (name) => `Maintenant : ${name}`,
     overlayNext: (name) => `À suivre : ${name}`,
     overlayAfter: (name) => `Ensuite : ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -83,6 +103,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "de-DE-ConradNeural",
     next: (c) => `Als Nächstes auf ${c}.`,
     after: () => "Danach.",
+    nowOn: (c) => `Jetzt auf ${c}:`,
+    nextOn: (c) => `Als Nächstes auf ${c}:`,
+    overlayNow: (name) => `Jetzt: ${name}`,
     overlayNext: (name) => `Als Nächstes: ${name}`,
     overlayAfter: (name) => `Danach: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -95,6 +118,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "it-IT-DiegoNeural",
     next: (c) => `A seguire su ${c}.`,
     after: () => "Dopo.",
+    nowOn: (c) => `Ora su ${c}:`,
+    nextOn: (c) => `A seguire su ${c}:`,
+    overlayNow: (name) => `Ora: ${name}`,
     overlayNext: (name) => `A seguire: ${name}`,
     overlayAfter: (name) => `Dopo: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -107,6 +133,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "pt-BR-AntonioNeural",
     next: (c) => `A seguir em ${c}.`,
     after: () => "Depois disso.",
+    nowOn: (c) => `Agora em ${c}:`,
+    nextOn: (c) => `A seguir em ${c}:`,
+    overlayNow: (name) => `Agora: ${name}`,
     overlayNext: (name) => `A seguir: ${name}`,
     overlayAfter: (name) => `Depois: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -119,6 +148,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "uk-UA-OstapNeural",
     next: (c) => `Далі на ${c}.`,
     after: () => "Після цього.",
+    nowOn: (c) => `Зараз на ${c}:`,
+    nextOn: (c) => `Далі на ${c}:`,
+    overlayNow: (name) => `Зараз: ${name}`,
     overlayNext: (name) => `Далі: ${name}`,
     overlayAfter: (name) => `Після цього: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -129,20 +161,25 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
   ukr: {
     language: "uk",
     voice: "uk-UA-OstapNeural",
-    next: (c) => VOICE_TEMPLATES.uk!.next(c),
-    after: (c) => VOICE_TEMPLATES.uk!.after(c),
-    overlayNext: (name) => VOICE_TEMPLATES.uk!.overlayNext(name),
-    overlayAfter: (name) => VOICE_TEMPLATES.uk!.overlayAfter(name),
-    seasonEpisode: (s, e, name) =>
-      VOICE_TEMPLATES.uk!.seasonEpisode(s, e, name),
-    seasonName: (s, name) => VOICE_TEMPLATES.uk!.seasonName(s, name),
-    startsAt: (time) => VOICE_TEMPLATES.uk!.startsAt(time),
+    next: (c) => COPY_TEMPLATES.uk!.next(c),
+    after: (c) => COPY_TEMPLATES.uk!.after(c),
+    nowOn: (c) => COPY_TEMPLATES.uk!.nowOn(c),
+    nextOn: (c) => COPY_TEMPLATES.uk!.nextOn(c),
+    overlayNow: (name) => COPY_TEMPLATES.uk!.overlayNow(name),
+    overlayNext: (name) => COPY_TEMPLATES.uk!.overlayNext(name),
+    overlayAfter: (name) => COPY_TEMPLATES.uk!.overlayAfter(name),
+    seasonEpisode: (s, e, name) => COPY_TEMPLATES.uk!.seasonEpisode(s, e, name),
+    seasonName: (s, name) => COPY_TEMPLATES.uk!.seasonName(s, name),
+    startsAt: (time) => COPY_TEMPLATES.uk!.startsAt(time),
   },
   pl: {
     language: "pl",
     voice: "pl-PL-MarekNeural",
     next: (c) => `Następnie na ${c}.`,
     after: () => "Potem.",
+    nowOn: (c) => `Teraz na ${c}:`,
+    nextOn: (c) => `Następnie na ${c}:`,
+    overlayNow: (name) => `Teraz: ${name}`,
     overlayNext: (name) => `Następnie: ${name}`,
     overlayAfter: (name) => `Potem: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -155,6 +192,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "nl-NL-MaartenNeural",
     next: (c) => `Hierna op ${c}.`,
     after: () => "Daarna.",
+    nowOn: (c) => `Nu op ${c}:`,
+    nextOn: (c) => `Hierna op ${c}:`,
+    overlayNow: (name) => `Nu: ${name}`,
     overlayNext: (name) => `Hierna: ${name}`,
     overlayAfter: (name) => `Daarna: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -167,6 +207,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "ja-JP-KeitaNeural",
     next: (c) => `このあと、${c}。`,
     after: () => "そのあと。",
+    nowOn: (c) => `ただいま、${c}:`,
+    nextOn: (c) => `このあと、${c}:`,
+    overlayNow: (name) => `現在: ${name}`,
     overlayNext: (name) => `次: ${name}`,
     overlayAfter: (name) => `そのあと: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -179,6 +222,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "zh-CN-YunxiNeural",
     next: (c) => `接下来在 ${c}。`,
     after: () => "之后。",
+    nowOn: (c) => `正在播放 · ${c}:`,
+    nextOn: (c) => `接下来在 ${c}:`,
+    overlayNow: (name) => `现在: ${name}`,
     overlayNext: (name) => `接下来: ${name}`,
     overlayAfter: (name) => `之后: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -191,6 +237,9 @@ export const VOICE_TEMPLATES: Record<string, VoiceTemplate> = {
     voice: "ko-KR-InJoonNeural",
     next: (c) => `다음 방송, ${c}.`,
     after: () => "그 다음에.",
+    nowOn: (c) => `지금 ${c}:`,
+    nextOn: (c) => `다음 방송, ${c}:`,
+    overlayNow: (name) => `지금: ${name}`,
     overlayNext: (name) => `다음: ${name}`,
     overlayAfter: (name) => `그 다음: ${name}`,
     seasonEpisode: (s, e, name) =>
@@ -204,22 +253,22 @@ export function normalizeLanguage(code?: string): string {
   if (!code) return "en";
 
   const lower = code.trim().toLowerCase().replace("_", "-");
-  if (VOICE_TEMPLATES[lower]) return lower;
+  if (COPY_TEMPLATES[lower]) return lower;
 
   const base = lower.split("-")[0] ?? "en";
-  if (VOICE_TEMPLATES[base]) return base;
+  if (COPY_TEMPLATES[base]) return base;
   if (base === "ua") return "uk";
 
   return "en";
 }
 
-export function getTemplate(language: string): VoiceTemplate {
+export function getCopyTemplate(language: string): CopyTemplate {
   const key = normalizeLanguage(language);
-  return VOICE_TEMPLATES[key] ?? VOICE_TEMPLATES.en!;
+  return COPY_TEMPLATES[key] ?? COPY_TEMPLATES.en!;
 }
 
 function buildShowDetail(
-  template: VoiceTemplate,
+  template: CopyTemplate,
   input: VoiceLineInput,
   mode: ShowVoiceDetail,
 ): string {
@@ -271,7 +320,7 @@ export function buildVoiceLine(
   language: string,
   input: VoiceLineInput,
 ): BuiltVoiceLine {
-  const template = getTemplate(language);
+  const template = getCopyTemplate(language);
   const cue: VoiceCue = input.cue === "after" ? "after" : "next";
   const lead =
     cue === "after"
@@ -296,7 +345,7 @@ export function formatEpisodeSubtitle(
   episodeNumber?: number,
   episodeTitle?: string,
 ): string {
-  const template = getTemplate(language);
+  const template = getCopyTemplate(language);
   if (seasonNumber != null && episodeNumber != null) {
     // Strip trailing period for on-screen use
     return template
@@ -313,7 +362,7 @@ export function formatOverlayHeadline(
   cue: VoiceCue,
   itemName: string,
 ): string {
-  const template = getTemplate(language);
+  const template = getCopyTemplate(language);
 
   return cue === "after"
     ? template.overlayAfter(itemName)
@@ -388,7 +437,7 @@ export function formatStartsAtLabel(
   date: Date,
   timeZone?: string,
 ): string {
-  return getTemplate(language).startsAt(
+  return getCopyTemplate(language).startsAt(
     formatWallClock(date, language, timeZone),
   );
 }

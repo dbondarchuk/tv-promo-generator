@@ -1343,3 +1343,368 @@ export function resolveDatabasePath(
 
   return configured;
 }
+
+/** ArtworkKind.Poster = 0 in ErsatzTV. */
+const ARTWORK_KIND_POSTER = 0;
+
+export interface GraphicsMediaContext {
+  mediaItemId: number;
+  title: string;
+  episodeTitle?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  filePath?: string;
+  artworkSourcePath?: string;
+  artworkHashPath?: string;
+  channelNumber?: string;
+  channelName?: string;
+  channelColor?: string;
+  nextMediaItemId?: number;
+  nextTitle?: string;
+  nextEpisodeTitle?: string;
+  nextSeasonNumber?: number;
+  nextEpisodeNumber?: number;
+}
+
+/** Resolve media item + channel + next primary for graphics overlays. */
+export function getGraphicsMediaContext(
+  db: Database.Database,
+  mediaItemId: number,
+): GraphicsMediaContext | undefined {
+  const schema = loadSchema(db);
+  const mediaFileTable = pickMediaFileTable(schema);
+  requireColumns(schema, mediaFileTable, ["Path", "MediaVersionId"]);
+  requireColumns(schema, "MediaVersion", ["Id"]);
+
+  const mediaItemExpr = mediaVersionMediaItemIdExpr(schema);
+  const fileRow = db
+    .prepare(
+      `
+      SELECT ${mediaItemExpr} AS mediaItemId, mf.Path AS path
+      FROM ${quoteIdent(mediaFileTable)} mf
+      INNER JOIN MediaVersion mv ON mv.Id = mf.MediaVersionId
+      WHERE ${mediaItemExpr} = ?
+      LIMIT 1
+    `,
+    )
+    .get(mediaItemId) as { mediaItemId: number; path?: string } | undefined;
+
+  const meta = getMediaItemMetadata(db, mediaItemId);
+  const fromPath = metadataFromFilePath(fileRow?.path);
+  const title =
+    meta?.title ||
+    fromPath?.title ||
+    (fileRow?.path ? path.basename(fileRow.path) : `Item ${mediaItemId}`);
+
+  const episodeTitle = meta?.episodeTitle || fromPath?.episodeTitle;
+  const seasonNumber = meta?.seasonNumber ?? fromPath?.seasonNumber;
+  const episodeNumber = meta?.episodeNumber ?? fromPath?.episodeNumber;
+
+  let artworkSourcePath: string | undefined;
+  let artworkHashPath: string | undefined;
+  if (schema.tables.has("Artwork")) {
+    const artCols = schema.columns.get("Artwork") ?? new Set();
+    if (artCols.has("Path") && artCols.has("ArtworkKind")) {
+      const joins: string[] = [];
+      if (
+        artCols.has("MovieMetadataId") &&
+        schema.tables.has("MovieMetadata")
+      ) {
+        joins.push(
+          `EXISTS (
+            SELECT 1 FROM MovieMetadata mm
+            WHERE mm.Id = a.MovieMetadataId AND mm.MovieId = ?
+          )`,
+        );
+      }
+
+      if (
+        artCols.has("EpisodeMetadataId") &&
+        schema.tables.has("EpisodeMetadata")
+      ) {
+        joins.push(
+          `EXISTS (
+            SELECT 1 FROM EpisodeMetadata em
+            WHERE em.Id = a.EpisodeMetadataId AND em.EpisodeId = ?
+          )`,
+        );
+      }
+
+      if (
+        artCols.has("OtherVideoMetadataId") &&
+        schema.tables.has("OtherVideoMetadata")
+      ) {
+        joins.push(
+          `EXISTS (
+            SELECT 1 FROM OtherVideoMetadata ovm
+            WHERE ovm.Id = a.OtherVideoMetadataId AND ovm.OtherVideoId = ?
+          )`,
+        );
+      }
+
+      if (joins.length > 0) {
+        const hasSource = artCols.has("SourcePath");
+        const sql = `
+          SELECT a.Path AS hashPath
+            ${hasSource ? ", a.SourcePath AS sourcePath" : ""}
+          FROM Artwork a
+          WHERE a.ArtworkKind = ?
+            AND (${joins.join(" OR ")})
+          ${
+            hasSource
+              ? `ORDER BY CASE WHEN a.SourcePath IS NOT NULL AND a.SourcePath != '' THEN 0 ELSE 1 END`
+              : ""
+          }
+          LIMIT 1
+        `;
+
+        const params = [ARTWORK_KIND_POSTER, ...joins.map(() => mediaItemId)];
+        const art = db.prepare(sql).get(...params) as
+          { hashPath?: string; sourcePath?: string } | undefined;
+
+        artworkSourcePath = art?.sourcePath || undefined;
+        artworkHashPath = art?.hashPath || undefined;
+      }
+    }
+  }
+
+  let channelNumber: string | undefined;
+  let channelName: string | undefined;
+  let nextMediaItemId: number | undefined;
+  let nextTitle: string | undefined;
+  let nextEpisodeTitle: string | undefined;
+  let nextSeasonNumber: number | undefined;
+  let nextEpisodeNumber: number | undefined;
+
+  if (schema.tables.has("PlayoutItem")) {
+    const nowRow = db
+      .prepare(
+        `
+        SELECT
+          c.Number AS channelNumber,
+          c.Name AS channelName,
+          pi.Finish AS finish
+        FROM PlayoutItem pi
+        INNER JOIN Playout p ON p.Id = pi.PlayoutId
+        INNER JOIN Channel c ON c.Id = p.ChannelId
+        WHERE pi.MediaItemId = ?
+          AND COALESCE(pi.FillerKind, 0) = 0
+        ORDER BY pi.Start DESC
+        LIMIT 1
+      `,
+      )
+      .get(mediaItemId) as
+      | { channelNumber?: string; channelName?: string; finish?: string }
+      | undefined;
+
+    channelNumber = nowRow?.channelNumber
+      ? String(nowRow.channelNumber)
+      : undefined;
+
+    channelName = nowRow?.channelName || undefined;
+
+    if (channelNumber && nowRow?.finish) {
+      const next = getPrimaryItemsAfter(db, channelNumber, nowRow.finish, 1)[0];
+      if (next) {
+        nextMediaItemId = next.mediaItemId;
+        const nextMeta =
+          getMediaItemMetadata(db, next.mediaItemId) ||
+          metadataFromFilePath(next.filePath);
+
+        nextTitle =
+          nextMeta?.title ||
+          (next.filePath
+            ? path.basename(next.filePath)
+            : `Item ${next.mediaItemId}`);
+
+        nextEpisodeTitle = nextMeta?.episodeTitle;
+        nextSeasonNumber = nextMeta?.seasonNumber;
+        nextEpisodeNumber = nextMeta?.episodeNumber;
+      }
+    }
+  }
+
+  return {
+    mediaItemId,
+    title,
+    episodeTitle,
+    seasonNumber,
+    episodeNumber,
+    filePath: fileRow?.path,
+    artworkSourcePath,
+    artworkHashPath,
+    channelNumber,
+    channelName,
+    nextMediaItemId,
+    nextTitle,
+    nextEpisodeTitle,
+    nextSeasonNumber,
+    nextEpisodeNumber,
+  };
+}
+
+/** Relative template paths we manage under templates/graphics-elements. */
+export const PROMO_GRAPHICS_TEMPLATE_PATHS = {
+  now: "image/promo-gen-now.yml",
+  midNow: "image/promo-gen-mid-now.yml",
+  midNext: "image/promo-gen-mid-next.yml",
+  next: "image/promo-gen-next.yml",
+} as const;
+
+/** Legacy single mid banner — removed on Push Graphics. */
+export const LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS = [
+  "image/promo-gen-mid.yml",
+] as const;
+
+/** GraphicsElement.Kind for image templates. */
+export const GRAPHICS_ELEMENT_KIND_IMAGE = 0;
+
+export function upsertGraphicsElement(
+  db: Database.Database,
+  relativePath: string,
+  name: string,
+): { id: number; created: boolean } {
+  const schema = loadSchema(db);
+  requireTable(schema, "GraphicsElement");
+  requireColumns(schema, "GraphicsElement", ["Id", "Path", "Kind"]);
+
+  const existing = db
+    .prepare(`SELECT Id AS id FROM GraphicsElement WHERE Path = ?`)
+    .get(relativePath) as { id: number } | undefined;
+
+  if (existing) {
+    if (schema.columns.get("GraphicsElement")?.has("Name")) {
+      db.prepare(
+        `UPDATE GraphicsElement SET Name = ?, Kind = ? WHERE Id = ?`,
+      ).run(name, GRAPHICS_ELEMENT_KIND_IMAGE, existing.id);
+    } else {
+      db.prepare(`UPDATE GraphicsElement SET Kind = ? WHERE Id = ?`).run(
+        GRAPHICS_ELEMENT_KIND_IMAGE,
+        existing.id,
+      );
+    }
+
+    return { id: existing.id, created: false };
+  }
+
+  const hasName = schema.columns.get("GraphicsElement")?.has("Name");
+  if (hasName) {
+    const info = db
+      .prepare(
+        `INSERT INTO GraphicsElement (Path, Kind, Name) VALUES (?, ?, ?)`,
+      )
+      .run(relativePath, GRAPHICS_ELEMENT_KIND_IMAGE, name);
+
+    return { id: Number(info.lastInsertRowid), created: true };
+  }
+
+  const info = db
+    .prepare(`INSERT INTO GraphicsElement (Path, Kind) VALUES (?, ?)`)
+    .run(relativePath, GRAPHICS_ELEMENT_KIND_IMAGE);
+
+  return { id: Number(info.lastInsertRowid), created: true };
+}
+
+export function deleteGraphicsElementByPath(
+  db: Database.Database,
+  relativePath: string,
+): void {
+  const schema = loadSchema(db);
+  if (!schema.tables.has("GraphicsElement")) return;
+
+  const row = db
+    .prepare(`SELECT Id AS id FROM GraphicsElement WHERE Path = ?`)
+    .get(relativePath) as { id: number } | undefined;
+
+  if (!row) return;
+
+  if (schema.tables.has("ProgramScheduleItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM ProgramScheduleItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(row.id);
+  }
+
+  if (schema.tables.has("PlayoutItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM PlayoutItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(row.id);
+  }
+
+  if (schema.tables.has("BlockItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM BlockItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(row.id);
+  }
+
+  if (schema.tables.has("DecoGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM DecoGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(row.id);
+  }
+
+  db.prepare(`DELETE FROM GraphicsElement WHERE Id = ?`).run(row.id);
+}
+
+/** Attach graphics elements to every item on a classic program schedule. */
+export function attachGraphicsToScheduleItems(
+  db: Database.Database,
+  programScheduleId: number,
+  graphicsElementIds: number[],
+): { items: number; links: number } {
+  const schema = loadSchema(db);
+  requireTable(schema, "ProgramScheduleItemGraphicsElement");
+  requireColumns(schema, "ProgramScheduleItemGraphicsElement", [
+    "ProgramScheduleItemId",
+    "GraphicsElementId",
+  ]);
+
+  const itemIds = listScheduleItemIds(db, programScheduleId);
+  if (itemIds.length === 0 || graphicsElementIds.length === 0) {
+    return { items: itemIds.length, links: 0 };
+  }
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO ProgramScheduleItemGraphicsElement
+      (ProgramScheduleItemId, GraphicsElementId) VALUES (?, ?)`,
+  );
+
+  let links = 0;
+  const tx = db.transaction(() => {
+    for (const itemId of itemIds) {
+      for (const geId of graphicsElementIds) {
+        const info = insert.run(itemId, geId);
+        links += info.changes;
+      }
+    }
+  });
+
+  tx();
+  return { items: itemIds.length, links };
+}
+
+/** Remove our promo-gen graphics links from a schedule (by GraphicsElement ids). */
+export function detachGraphicsFromScheduleItems(
+  db: Database.Database,
+  programScheduleId: number,
+  graphicsElementIds: number[],
+): number {
+  if (graphicsElementIds.length === 0) return 0;
+
+  const schema = loadSchema(db);
+  if (!schema.tables.has("ProgramScheduleItemGraphicsElement")) return 0;
+
+  const itemIds = listScheduleItemIds(db, programScheduleId);
+  if (itemIds.length === 0) return 0;
+
+  const placeholders = graphicsElementIds.map(() => "?").join(",");
+  const itemPlaceholders = itemIds.map(() => "?").join(",");
+  const info = db
+    .prepare(
+      `DELETE FROM ProgramScheduleItemGraphicsElement
+       WHERE GraphicsElementId IN (${placeholders})
+         AND ProgramScheduleItemId IN (${itemPlaceholders})`,
+    )
+    .run(...graphicsElementIds, ...itemIds);
+
+  return info.changes;
+}

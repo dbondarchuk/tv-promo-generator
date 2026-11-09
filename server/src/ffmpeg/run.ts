@@ -56,3 +56,34 @@ export function spawnFfmpegFile(
     stdio: ["ignore", "ignore", "pipe"] as const,
   });
 }
+
+/** Run ffmpeg with image/pipe output on stdout (no temp file). */
+export function runFfmpegStdout(args: string[]): Promise<{
+  code: number;
+  stdout: Buffer;
+  stderr: string;
+}> {
+  const { ffmpeg } = resolveFfmpegBinaries();
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg, ["-hide_banner", "-y", ...args], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"] as const,
+    });
+
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => chunks.push(d));
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += String(d);
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(chunks),
+        stderr,
+      });
+    });
+  });
+}

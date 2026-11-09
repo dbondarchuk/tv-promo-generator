@@ -8,7 +8,7 @@ import { runFfmpeg } from "../ffmpeg/run.js";
 import { createLogger } from "../util/log.js";
 import {
   buildVoiceLine,
-  getTemplate,
+  getCopyTemplate,
   normalizeLanguage,
   VoiceLineInput,
 } from "./templates.js";
@@ -105,7 +105,7 @@ export function voiceRuntimeFromSettings(settings: AppSettings): VoiceRuntime {
 
 function languageLookupKeys(language: string): string[] {
   const normalized = normalizeLanguage(language);
-  const templateLang = getTemplate(language).language;
+  const templateLang = getCopyTemplate(language).language;
   const raw = language.trim().toLowerCase().replace(/-/g, "_");
   const base = raw.split("_")[0] ?? raw;
 
@@ -160,7 +160,7 @@ export function describeVoiceRequest(
   language: string,
 ): string {
   const runtime = voiceRuntimeFromSettings(settings);
-  const template = getTemplate(language);
+  const template = getCopyTemplate(language);
   const lang = template.language;
   const parts = [`lang=${lang}`, `provider=${runtime.provider}`];
 
@@ -331,7 +331,7 @@ async function synthesizePiper(
   const result = await synthesizeWyomingToWav(url, text, outWavPath, {
     voice,
     speaker,
-    language: getTemplate(language).language,
+    language: getCopyTemplate(language).language,
     timeoutMs,
   });
 

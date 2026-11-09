@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
+import { GraphicsOverlayPreview } from "../components/GraphicsOverlayPreview";
 import { LivePromoPreview } from "../components/LivePromoPreview";
 
 const DEFAULT_PUSH_FILLERS: Record<FillerPlacement, boolean> = {
@@ -98,7 +99,9 @@ export function ChannelsPage() {
     () =>
       jobs.some(
         (j) =>
-          (j.kind === "push" || j.kind === "rollback") &&
+          (j.kind === "push" ||
+            j.kind === "push-graphics" ||
+            j.kind === "rollback") &&
           (j.status === "queued" || j.status === "running"),
       ),
     [jobs],
@@ -222,7 +225,9 @@ export function ChannelsPage() {
 
         for (const j of nextJobs) {
           if (
-            (j.kind === "push" || j.kind === "rollback") &&
+            (j.kind === "push" ||
+              j.kind === "push-graphics" ||
+              j.kind === "rollback") &&
             (j.status === "succeeded" || j.status === "failed") &&
             j.finishedAt &&
             !seenExclusiveFinishedRef.current.has(j.id)
@@ -245,7 +250,9 @@ export function ChannelsPage() {
 
           const runningExclusive = nextJobs.find(
             (job) =>
-              (job.kind === "push" || job.kind === "rollback") &&
+              (job.kind === "push" ||
+                job.kind === "push-graphics" ||
+                job.kind === "rollback") &&
               job.status === "running",
           );
 
@@ -347,6 +354,21 @@ export function ChannelsPage() {
     setPushDialogOpen(false);
     try {
       const { job } = await api.push(options);
+      userExpandedRef.current = true;
+      setExpandedJobId(job.id);
+      stickToBottomRef.current = true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pushGraphics() {
+    setBusy(true);
+    setError("");
+    try {
+      const { job } = await api.pushGraphics();
       userExpandedRef.current = true;
       setExpandedJobId(job.id);
       stickToBottomRef.current = true;
@@ -599,6 +621,14 @@ export function ChannelsPage() {
               Push to ErsatzTV
             </button>
             <button
+              className="secondary"
+              disabled={busy || exclusiveActive}
+              title="Deploy Now/Mid/Next graphics templates and attach them to classic schedule items"
+              onClick={() => void pushGraphics()}
+            >
+              Push Graphics
+            </button>
+            <button
               className="danger"
               disabled={busy || exclusiveActive || !latestPushBackup}
               title={
@@ -652,7 +682,7 @@ export function ChannelsPage() {
             const latest = j.logs?.[j.logs.length - 1];
             const kind = j.kind ?? "generate";
             const kindClass =
-              kind === "push"
+              kind === "push" || kind === "push-graphics"
                 ? "push"
                 : kind === "rollback"
                   ? "rollback"
@@ -849,6 +879,15 @@ export function ChannelsPage() {
                   </li>
                 ))}
               </ul>
+
+              <GraphicsOverlayPreview
+                channelNumber={ch.number}
+                channelName={ch.name}
+                language={ch.language}
+                mediaItemId={
+                  ch.currentItem?.mediaItemId ?? ch.nextItems[0]?.mediaItemId
+                }
+              />
 
               <div className="flex-1" />
 

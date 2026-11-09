@@ -2,6 +2,7 @@ import {
   AppSettings,
   ChannelOverrides,
   DEFAULT_SETTINGS,
+  isGraphicsImageSource,
   isPromoDeliveryMode,
   isPromoItemCount,
   isShowVoiceDetail,
@@ -228,6 +229,74 @@ function normalizeSettings(
   if (!isPromoDeliveryMode(merged.promoDeliveryMode)) {
     merged.promoDeliveryMode = DEFAULT_SETTINGS.promoDeliveryMode;
   }
+
+  if (typeof merged.etvConfigPath !== "string") {
+    merged.etvConfigPath = DEFAULT_SETTINGS.etvConfigPath;
+  }
+
+  if (!isGraphicsImageSource(merged.graphicsImageSource)) {
+    merged.graphicsImageSource = DEFAULT_SETTINGS.graphicsImageSource;
+  }
+
+  const clampSec = (value: unknown, fallback: number) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+
+    return Math.round(n);
+  };
+
+  merged.graphicsNowEnabled = Boolean(merged.graphicsNowEnabled);
+  merged.graphicsMidEnabled = Boolean(merged.graphicsMidEnabled);
+  merged.graphicsNextEnabled = Boolean(merged.graphicsNextEnabled);
+  merged.graphicsNowDelaySeconds = clampSec(
+    merged.graphicsNowDelaySeconds,
+    DEFAULT_SETTINGS.graphicsNowDelaySeconds,
+  );
+
+  merged.graphicsNowDurationSeconds = Math.max(
+    1,
+    clampSec(
+      merged.graphicsNowDurationSeconds,
+      DEFAULT_SETTINGS.graphicsNowDurationSeconds,
+    ),
+  );
+
+  merged.graphicsMidDelaySeconds = clampSec(
+    merged.graphicsMidDelaySeconds,
+    DEFAULT_SETTINGS.graphicsMidDelaySeconds,
+  );
+
+  merged.graphicsMidDurationSeconds = Math.max(
+    1,
+    clampSec(
+      merged.graphicsMidDurationSeconds,
+      DEFAULT_SETTINGS.graphicsMidDurationSeconds,
+    ),
+  );
+
+  merged.graphicsNextBeforeEndSeconds = clampSec(
+    merged.graphicsNextBeforeEndSeconds,
+    DEFAULT_SETTINGS.graphicsNextBeforeEndSeconds,
+  );
+
+  merged.graphicsNextDurationSeconds = Math.max(
+    1,
+    clampSec(
+      merged.graphicsNextDurationSeconds,
+      DEFAULT_SETTINGS.graphicsNextDurationSeconds,
+    ),
+  );
+
+  merged.graphicsFadeSeconds = Math.max(
+    0,
+    clampSec(merged.graphicsFadeSeconds, DEFAULT_SETTINGS.graphicsFadeSeconds),
+  );
+
+  const barH = Number(merged.graphicsBarHeightPercent);
+  merged.graphicsBarHeightPercent =
+    Number.isFinite(barH) && barH >= 8 && barH <= 40
+      ? Math.round(barH)
+      : DEFAULT_SETTINGS.graphicsBarHeightPercent;
 
   return merged;
 }
