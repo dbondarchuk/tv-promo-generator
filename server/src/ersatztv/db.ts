@@ -1473,8 +1473,7 @@ export function getGraphicsMediaContext(
     `,
     )
     .get(resolvedMediaItemId) as
-    | { mediaItemId: number; path?: string }
-    | undefined;
+    { mediaItemId: number; path?: string } | undefined;
 
   const meta = getMediaItemMetadata(db, resolvedMediaItemId);
   const fromPath = metadataFromFilePath(fileRow?.path);
@@ -1553,8 +1552,7 @@ export function getGraphicsMediaContext(
         ];
 
         const art = db.prepare(sql).get(...params) as
-          | { hashPath?: string; sourcePath?: string }
-          | undefined;
+          { hashPath?: string; sourcePath?: string } | undefined;
 
         artworkSourcePath = art?.sourcePath || undefined;
         artworkHashPath = art?.hashPath || undefined;

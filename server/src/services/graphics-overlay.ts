@@ -299,8 +299,7 @@ function resolveOverlayMediaItemId(
   atUtcIso?: string;
 } {
   const channelNumber = hints.channelNumber?.trim();
-  const atUtcIso =
-    parseOverlayAt(hints.at) ?? new Date().toISOString();
+  const atUtcIso = parseOverlayAt(hints.at) ?? new Date().toISOString();
 
   if (channelNumber) {
     const db = openDb(settings.etvDatabase, true);

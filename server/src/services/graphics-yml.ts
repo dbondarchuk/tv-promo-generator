@@ -12,25 +12,36 @@ export function graphicsElementsRoot(etvConfigPath: string): string {
   return path.join(etvConfigPath, "templates", "graphics-elements");
 }
 
-const SLOT_FILES: Record<GraphicsTemplateSlot, string> = {
-  now: "now.yml",
-  midNow: "mid-now.yml",
-  midNext: "mid-next.yml",
-  next: "next.yml",
+const SLOT_SUFFIX: Record<GraphicsTemplateSlot, string> = {
+  now: "now",
+  midNow: "mid-now",
+  midNext: "mid-next",
+  next: "next",
 };
 
-/** Per-channel relative template path under graphics-elements. */
+/**
+ * Flat per-channel path under graphics-elements/image.
+ * ETV ListFiles is non-recursive — nested folders are not scanned.
+ */
 export function channelGraphicsTemplatePath(
   channelNumber: string,
   slot: GraphicsTemplateSlot,
 ): string {
-  const folder = sanitizeChannelFolderName(channelNumber);
-  return `image/promo-gen/${folder}/${SLOT_FILES[slot]}`;
+  const ch = sanitizeChannelFolderName(channelNumber);
+  return `image/promo-gen-${ch}-${SLOT_SUFFIX[slot]}.yml`;
 }
 
 export function channelGraphicsTemplatePaths(channelNumber: string): string[] {
-  return (Object.keys(SLOT_FILES) as GraphicsTemplateSlot[]).map((slot) =>
+  return (Object.keys(SLOT_SUFFIX) as GraphicsTemplateSlot[]).map((slot) =>
     channelGraphicsTemplatePath(channelNumber, slot),
+  );
+}
+
+export function isPromoGenTemplatePath(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, "/");
+  return (
+    normalized.startsWith("image/promo-gen-") ||
+    normalized.startsWith("image/promo-gen/")
   );
 }
 
@@ -149,14 +160,26 @@ export function slotEnabled(
 export function enabledGraphicsSlots(
   settings: AppSettings,
 ): GraphicsTemplateSlot[] {
-  return (Object.keys(SLOT_FILES) as GraphicsTemplateSlot[]).filter((slot) =>
+  return (Object.keys(SLOT_SUFFIX) as GraphicsTemplateSlot[]).filter((slot) =>
     slotEnabled(slot, settings),
   );
 }
 
-/** Remove shared (non-per-channel) templates from earlier iterations. */
-function cleanupSharedLegacyTemplates(root: string): string[] {
+/** Remove nested/shared templates from earlier iterations. */
+function cleanupLegacyTemplates(
+  root: string,
+  keepRelPaths: Set<string>,
+): string[] {
   const removed: string[] = [];
+  const imageDir = path.join(root, "image");
+
+  // Old nested layout: image/promo-gen/{channel}/...
+  const nestedRoot = path.join(imageDir, "promo-gen");
+  if (fs.existsSync(nestedRoot)) {
+    fs.rmSync(nestedRoot, { recursive: true, force: true });
+    removed.push("image/promo-gen/");
+  }
+
   const shared = [
     ...LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS,
     "image/promo-gen-now.yml",
@@ -166,6 +189,8 @@ function cleanupSharedLegacyTemplates(root: string): string[] {
   ];
 
   for (const rel of shared) {
+    if (keepRelPaths.has(rel)) continue;
+
     const abs = path.join(root, rel);
     if (fs.existsSync(abs)) {
       fs.unlinkSync(abs);
@@ -173,25 +198,17 @@ function cleanupSharedLegacyTemplates(root: string): string[] {
     }
   }
 
-  return removed;
-}
+  if (fs.existsSync(imageDir)) {
+    for (const name of fs.readdirSync(imageDir)) {
+      if (!name.startsWith("promo-gen-") || !name.endsWith(".yml")) continue;
 
-/** Remove per-channel template folders that are no longer targeted. */
-function cleanupStaleChannelFolders(
-  root: string,
-  keepChannelFolders: Set<string>,
-): string[] {
-  const removed: string[] = [];
-  const promoRoot = path.join(root, "image", "promo-gen");
-  if (!fs.existsSync(promoRoot)) return removed;
+      const rel = `image/${name}`;
+      if (keepRelPaths.has(rel)) continue;
 
-  for (const entry of fs.readdirSync(promoRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (keepChannelFolders.has(entry.name)) continue;
-
-    const abs = path.join(promoRoot, entry.name);
-    fs.rmSync(abs, { recursive: true, force: true });
-    removed.push(`image/promo-gen/${entry.name}/`);
+      const abs = path.join(imageDir, name);
+      fs.unlinkSync(abs);
+      removed.push(rel);
+    }
   }
 
   return removed;
@@ -204,35 +221,26 @@ export function writeGraphicsTemplates(
   cleanupLegacyStillCache(settings.cachePath);
 
   const root = graphicsElementsRoot(settings.etvConfigPath);
-  fs.mkdirSync(path.join(root, "image", "promo-gen"), { recursive: true });
-
-  const written: string[] = [];
-  const removed: string[] = [...cleanupSharedLegacyTemplates(root)];
-
-  const keepFolders = new Set(
-    channelNumbers.map((n) => sanitizeChannelFolderName(n)),
-  );
+  fs.mkdirSync(path.join(root, "image"), { recursive: true });
 
   const slots = enabledGraphicsSlots(settings);
-  const allSlots = Object.keys(SLOT_FILES) as GraphicsTemplateSlot[];
+  const allSlots = Object.keys(SLOT_SUFFIX) as GraphicsTemplateSlot[];
+  const keepRelPaths = new Set<string>();
+  const written: string[] = [];
 
   for (const channelNumber of channelNumbers) {
-    const folder = sanitizeChannelFolderName(channelNumber);
-    const dir = path.join(root, "image", "promo-gen", folder);
-    fs.mkdirSync(dir, { recursive: true });
-
     for (const slot of allSlots) {
       const rel = channelGraphicsTemplatePath(channelNumber, slot);
       const abs = path.join(root, rel);
       if (!slots.includes(slot)) {
         if (fs.existsSync(abs)) {
           fs.unlinkSync(abs);
-          removed.push(rel);
         }
 
         continue;
       }
 
+      keepRelPaths.add(rel);
       fs.writeFileSync(
         abs,
         buildGraphicsElementYaml(settings, slot, channelNumber),
@@ -243,7 +251,7 @@ export function writeGraphicsTemplates(
     }
   }
 
-  removed.push(...cleanupStaleChannelFolders(root, keepFolders));
+  const removed = cleanupLegacyTemplates(root, keepRelPaths);
 
   return { written, removed };
 }

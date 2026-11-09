@@ -536,6 +536,7 @@ export function createGraphicsRouter(getSettings: () => AppSettings): Router {
       Number.isFinite(mediaItemRaw) && mediaItemRaw > 0
         ? mediaItemRaw
         : undefined;
+
     const at = queryString(req.query.at);
     const channelNumber = queryString(req.query.channelNumber);
     const channelName = queryString(req.query.channelName);
