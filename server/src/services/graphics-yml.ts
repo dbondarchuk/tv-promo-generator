@@ -136,6 +136,13 @@ function imagePhaseForSlot(slot: GraphicsTemplateSlot): GraphicsPhase {
   return slot === "next" || slot === "midNext" ? "next" : "now";
 }
 
+const SLOT_LABELS: Record<GraphicsTemplateSlot, string> = {
+  now: "Now",
+  midNow: "Mid Now",
+  midNext: "Mid Next",
+  next: "Next",
+};
+
 export function buildGraphicsElementYaml(
   settings: AppSettings,
   slot: GraphicsTemplateSlot,
@@ -147,6 +154,7 @@ export function buildGraphicsElementYaml(
 
   const phase = imagePhaseForSlot(slot);
   const lines = [
+    `name: "Promo Generator — ${SLOT_LABELS[slot]} (#${channelNumber})"`,
     `opacity_expression: "${opacityExpression(slot, settings)}"`,
     `location: BottomLeft`,
     `horizontal_margin_percent: 0`,

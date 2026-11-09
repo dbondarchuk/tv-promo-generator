@@ -1,4 +1,4 @@
-import { AppSettings, GraphicsTemplateSlot, JobLogLevel } from "@promo/shared";
+import { AppSettings, JobLogLevel } from "@promo/shared";
 import fs from "node:fs";
 import { loadChannelOverrides } from "../config.js";
 import {
@@ -6,9 +6,12 @@ import {
   deleteGraphicsElementByPath,
   detachGraphicsFromScheduleItems,
   getPlayoutForChannel,
+  graphicsElementIdsForRelativePaths,
   listChannelNumbers,
+  listManagedGraphicsElementPaths,
   openDb,
   resetSchemaCache,
+  toRelativeGraphicsElementPath,
   upsertGraphicsElement,
 } from "../ersatztv/db.js";
 import { createLogger } from "../util/log.js";
@@ -61,48 +64,6 @@ async function withWriteDb<T>(
   throw lastErr instanceof Error
     ? lastErr
     : new Error(String(lastErr ?? "DB write failed"));
-}
-
-const SLOT_LABELS: Record<GraphicsTemplateSlot, string> = {
-  now: "Now",
-  midNow: "Mid Now",
-  midNext: "Mid Next",
-  next: "Next",
-};
-
-function graphicsElementName(
-  channelNumber: string,
-  slot: GraphicsTemplateSlot,
-): string {
-  return `Promo Generator — ${SLOT_LABELS[slot]} (#${channelNumber})`;
-}
-
-function graphicsElementIdsByPaths(
-  db: ReturnType<typeof openDb>,
-  paths: string[],
-): number[] {
-  const ids: number[] = [];
-  for (const rel of paths) {
-    const row = db
-      .prepare(`SELECT Id AS id FROM GraphicsElement WHERE Path = ?`)
-      .get(rel) as { id: number } | undefined;
-
-    if (row) ids.push(row.id);
-  }
-
-  return ids;
-}
-
-/** All GraphicsElement rows we manage (shared legacy + per-channel). */
-function listManagedGraphicsPaths(db: ReturnType<typeof openDb>): string[] {
-  const rows = db
-    .prepare(
-      `SELECT Path AS path FROM GraphicsElement
-       WHERE Path LIKE 'image/promo-gen%'`,
-    )
-    .all() as Array<{ path: string }>;
-
-  return rows.map((r) => r.path);
 }
 
 function resolveTargetChannels(settings: AppSettings): string[] {
@@ -164,23 +125,18 @@ export async function pushGraphicsToErsatzTv(
   const channelElementIds = new Map<string, number[]>();
 
   await withWriteDb(settings.etvDatabase, progress, (db) => {
-    const priorManaged = listManagedGraphicsPaths(db);
-    const keepPaths = new Set<string>();
+    const priorManaged = listManagedGraphicsElementPaths(db);
+    const keepRelPaths = new Set<string>();
 
     for (const channelNumber of targets) {
       const ids: number[] = [];
       for (const slot of slots) {
         const rel = channelGraphicsTemplatePath(channelNumber, slot);
-        keepPaths.add(rel);
-        const upserted = upsertGraphicsElement(
-          db,
-          rel,
-          graphicsElementName(channelNumber, slot),
-        );
-
+        keepRelPaths.add(rel);
+        const upserted = upsertGraphicsElement(db, rel);
         ids.push(upserted.id);
         progress(
-          `  #${channelNumber} ${slot}: ${upserted.created ? "created" : "updated"} id=${upserted.id}`,
+          `  #${channelNumber} ${slot}: ${upserted.created ? "created" : "updated"} id=${upserted.id} · ${upserted.path}`,
         );
       }
 
@@ -188,8 +144,9 @@ export async function pushGraphicsToErsatzTv(
     }
 
     // Drop GraphicsElement rows for stale/shared templates we no longer keep.
-    for (const rel of priorManaged) {
-      if (keepPaths.has(rel)) continue;
+    for (const stored of priorManaged) {
+      const rel = toRelativeGraphicsElementPath(stored);
+      if (keepRelPaths.has(rel)) continue;
 
       deleteGraphicsElementByPath(db, rel);
       progress(`Removed GraphicsElement ${rel}`);
@@ -216,9 +173,9 @@ export async function pushGraphicsToErsatzTv(
       }
 
       // Detach any promo-gen links (including other channels' leftovers).
-      const managedIds = graphicsElementIdsByPaths(
+      const managedIds = graphicsElementIdsForRelativePaths(
         db,
-        listManagedGraphicsPaths(db),
+        listManagedGraphicsElementPaths(db).map(toRelativeGraphicsElementPath),
       );
 
       detachGraphicsFromScheduleItems(

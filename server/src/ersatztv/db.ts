@@ -1595,50 +1595,179 @@ export const LEGACY_PROMO_GRAPHICS_TEMPLATE_PATHS = [
 /** GraphicsElement.Kind for image templates. */
 export const GRAPHICS_ELEMENT_KIND_IMAGE = 0;
 
+function normalizeGraphicsRelPath(relativePath: string): string {
+  return relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+/**
+ * Strip ETV absolute Path down to the templates/graphics-elements-relative
+ * form we write on disk (e.g. image/promo-gen-6-now.yml).
+ */
+export function toRelativeGraphicsElementPath(storedPath: string): string {
+  const norm = storedPath.replace(/\\/g, "/");
+  const marker = "/graphics-elements/";
+  const idx = norm.lastIndexOf(marker);
+  if (idx >= 0) return norm.slice(idx + marker.length);
+
+  return normalizeGraphicsRelPath(storedPath);
+}
+
+/**
+ * ETV stores GraphicsElement.Path as an absolute host path and reads that
+ * file at playback. Relative paths (image/...) show in the UI but fail to
+ * load. Prefer an existing absolute row; otherwise prefix from siblings.
+ */
+export function resolveGraphicsElementStoredPath(
+  db: Database.Database,
+  relativePath: string,
+): string {
+  const rel = normalizeGraphicsRelPath(relativePath);
+  const existing = db
+    .prepare(
+      `SELECT Path AS path FROM GraphicsElement
+       WHERE Path = ?
+          OR replace(Path, '\\', '/') LIKE ?
+       ORDER BY length(Path) DESC
+       LIMIT 1`,
+    )
+    .get(rel, `%/${rel}`) as { path: string } | undefined;
+
+  if (existing?.path) return existing.path;
+
+  const sample = db
+    .prepare(
+      `SELECT Path AS path FROM GraphicsElement
+       WHERE replace(Path, '\\', '/') LIKE '%/graphics-elements/%'
+       LIMIT 1`,
+    )
+    .get() as { path: string } | undefined;
+
+  if (sample?.path) {
+    const norm = sample.path.replace(/\\/g, "/");
+    const marker = "/graphics-elements/";
+    const idx = norm.lastIndexOf(marker);
+    if (idx >= 0) {
+      const root = norm.slice(0, idx + "/graphics-elements".length);
+      const joined = `${root}/${rel}`;
+      if (sample.path.includes("\\") && !sample.path.startsWith("/")) {
+        return joined.replace(/\//g, "\\");
+      }
+
+      return joined;
+    }
+  }
+
+  return rel;
+}
+
+function listGraphicsElementIdsForRelPath(
+  db: Database.Database,
+  relativePath: string,
+): number[] {
+  const rel = normalizeGraphicsRelPath(relativePath);
+  const rows = db
+    .prepare(
+      `SELECT Id AS id FROM GraphicsElement
+       WHERE Path = ?
+          OR replace(Path, '\\', '/') LIKE ?`,
+    )
+    .all(rel, `%/${rel}`) as Array<{ id: number }>;
+
+  return rows.map((r) => r.id);
+}
+
+function deleteGraphicsElementById(
+  db: Database.Database,
+  id: number,
+  schema: DbSchema = loadSchema(db),
+): void {
+  if (schema.tables.has("ProgramScheduleItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM ProgramScheduleItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(id);
+  }
+
+  if (schema.tables.has("PlayoutItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM PlayoutItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(id);
+  }
+
+  if (schema.tables.has("BlockItemGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM BlockItemGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(id);
+  }
+
+  if (schema.tables.has("DecoGraphicsElement")) {
+    db.prepare(
+      `DELETE FROM DecoGraphicsElement WHERE GraphicsElementId = ?`,
+    ).run(id);
+  }
+
+  db.prepare(`DELETE FROM GraphicsElement WHERE Id = ?`).run(id);
+}
+
+/**
+ * Ensure a GraphicsElement row exists with the absolute Path ETV expects.
+ * Orphan relative-path duplicates from earlier pushes are removed.
+ */
 export function upsertGraphicsElement(
   db: Database.Database,
   relativePath: string,
-  name: string,
-): { id: number; created: boolean } {
+): { id: number; created: boolean; path: string } {
   const schema = loadSchema(db);
   requireTable(schema, "GraphicsElement");
   requireColumns(schema, "GraphicsElement", ["Id", "Path", "Kind"]);
 
-  const existing = db
+  const rel = normalizeGraphicsRelPath(relativePath);
+  const storedPath = resolveGraphicsElementStoredPath(db, rel);
+  const matchingIds = listGraphicsElementIdsForRelPath(db, rel);
+  const canonical = db
     .prepare(`SELECT Id AS id FROM GraphicsElement WHERE Path = ?`)
-    .get(relativePath) as { id: number } | undefined;
+    .get(storedPath) as { id: number } | undefined;
 
-  if (existing) {
-    if (schema.columns.get("GraphicsElement")?.has("Name")) {
-      db.prepare(
-        `UPDATE GraphicsElement SET Name = ?, Kind = ? WHERE Id = ?`,
-      ).run(name, GRAPHICS_ELEMENT_KIND_IMAGE, existing.id);
-    } else {
-      db.prepare(`UPDATE GraphicsElement SET Kind = ? WHERE Id = ?`).run(
-        GRAPHICS_ELEMENT_KIND_IMAGE,
-        existing.id,
-      );
+  if (canonical) {
+    for (const id of matchingIds) {
+      if (id !== canonical.id) deleteGraphicsElementById(db, id, schema);
     }
 
-    return { id: existing.id, created: false };
+    db.prepare(`UPDATE GraphicsElement SET Kind = ? WHERE Id = ?`).run(
+      GRAPHICS_ELEMENT_KIND_IMAGE,
+      canonical.id,
+    );
+
+    return { id: canonical.id, created: false, path: storedPath };
   }
 
-  const hasName = schema.columns.get("GraphicsElement")?.has("Name");
-  if (hasName) {
-    const info = db
-      .prepare(
-        `INSERT INTO GraphicsElement (Path, Kind, Name) VALUES (?, ?, ?)`,
-      )
-      .run(relativePath, GRAPHICS_ELEMENT_KIND_IMAGE, name);
+  if (matchingIds.length > 0) {
+    const keepId = matchingIds[0];
+    for (const id of matchingIds.slice(1)) {
+      deleteGraphicsElementById(db, id, schema);
+    }
 
-    return { id: Number(info.lastInsertRowid), created: true };
+    if (schema.columns.get("GraphicsElement")?.has("Name")) {
+      db.prepare(
+        `UPDATE GraphicsElement SET Path = ?, Kind = ?, Name = NULL WHERE Id = ?`,
+      ).run(storedPath, GRAPHICS_ELEMENT_KIND_IMAGE, keepId);
+    } else {
+      db.prepare(
+        `UPDATE GraphicsElement SET Path = ?, Kind = ? WHERE Id = ?`,
+      ).run(storedPath, GRAPHICS_ELEMENT_KIND_IMAGE, keepId);
+    }
+
+    return { id: keepId, created: false, path: storedPath };
   }
 
   const info = db
     .prepare(`INSERT INTO GraphicsElement (Path, Kind) VALUES (?, ?)`)
-    .run(relativePath, GRAPHICS_ELEMENT_KIND_IMAGE);
+    .run(storedPath, GRAPHICS_ELEMENT_KIND_IMAGE);
 
-  return { id: Number(info.lastInsertRowid), created: true };
+  return {
+    id: Number(info.lastInsertRowid),
+    created: true,
+    path: storedPath,
+  };
 }
 
 export function deleteGraphicsElementByPath(
@@ -1648,37 +1777,39 @@ export function deleteGraphicsElementByPath(
   const schema = loadSchema(db);
   if (!schema.tables.has("GraphicsElement")) return;
 
-  const row = db
-    .prepare(`SELECT Id AS id FROM GraphicsElement WHERE Path = ?`)
-    .get(relativePath) as { id: number } | undefined;
+  for (const id of listGraphicsElementIdsForRelPath(db, relativePath)) {
+    deleteGraphicsElementById(db, id, schema);
+  }
+}
 
-  if (!row) return;
-
-  if (schema.tables.has("ProgramScheduleItemGraphicsElement")) {
-    db.prepare(
-      `DELETE FROM ProgramScheduleItemGraphicsElement WHERE GraphicsElementId = ?`,
-    ).run(row.id);
+/** All GraphicsElement ids whose Path maps to the given relative templates. */
+export function graphicsElementIdsForRelativePaths(
+  db: Database.Database,
+  relativePaths: string[],
+): number[] {
+  const ids: number[] = [];
+  for (const rel of relativePaths) {
+    ids.push(...listGraphicsElementIdsForRelPath(db, rel));
   }
 
-  if (schema.tables.has("PlayoutItemGraphicsElement")) {
-    db.prepare(
-      `DELETE FROM PlayoutItemGraphicsElement WHERE GraphicsElementId = ?`,
-    ).run(row.id);
-  }
+  return ids;
+}
 
-  if (schema.tables.has("BlockItemGraphicsElement")) {
-    db.prepare(
-      `DELETE FROM BlockItemGraphicsElement WHERE GraphicsElementId = ?`,
-    ).run(row.id);
-  }
+/** Managed promo-gen template paths (absolute and/or relative). */
+export function listManagedGraphicsElementPaths(
+  db: Database.Database,
+): string[] {
+  if (!loadSchema(db).tables.has("GraphicsElement")) return [];
 
-  if (schema.tables.has("DecoGraphicsElement")) {
-    db.prepare(
-      `DELETE FROM DecoGraphicsElement WHERE GraphicsElementId = ?`,
-    ).run(row.id);
-  }
+  const rows = db
+    .prepare(
+      `SELECT Path AS path FROM GraphicsElement
+       WHERE Path LIKE 'image/promo-gen%'
+          OR replace(Path, '\\', '/') LIKE '%/image/promo-gen%'`,
+    )
+    .all() as Array<{ path: string }>;
 
-  db.prepare(`DELETE FROM GraphicsElement WHERE Id = ?`).run(row.id);
+  return rows.map((r) => r.path);
 }
 
 /** Attach graphics elements to every item on a classic program schedule. */
