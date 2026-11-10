@@ -66,29 +66,69 @@ async function withWriteDb<T>(
     : new Error(String(lastErr ?? "DB write failed"));
 }
 
-function resolveTargetChannels(settings: AppSettings): string[] {
-  const overrides = loadChannelOverrides();
-  let targets = Object.entries(overrides)
-    .filter(([, o]) => o.enabled !== false)
-    .map(([number]) => number);
-
-  if (targets.length === 0) {
-    const db = openDb(settings.etvDatabase, true);
-    try {
-      targets = listChannelNumbers(db).map((c) => c.number);
-    } finally {
-      db.close();
-    }
+function listAllChannelNumbers(settings: AppSettings): string[] {
+  const db = openDb(settings.etvDatabase, true);
+  try {
+    return listChannelNumbers(db).map((c) => c.number);
+  } finally {
+    db.close();
   }
-
-  return targets;
 }
 
-/** Deploy per-channel Now/Mid/Next graphics and attach to classic schedules. */
-export async function pushGraphicsToErsatzTv(
-  settings: AppSettings,
-  progress: GraphicsProgress = () => undefined,
-): Promise<{ ok: boolean; message: string }> {
+/** Channels that should receive Now/Mid/Next overlays (default on). */
+function resolveGraphicsTargetChannels(settings: AppSettings): string[] {
+  const overrides = loadChannelOverrides();
+  return listAllChannelNumbers(settings).filter(
+    (number) => overrides[number]?.graphicsEnabled !== false,
+  );
+}
+
+function managedGraphicsElementIds(db: ReturnType<typeof openDb>): number[] {
+  return graphicsElementIdsForRelativePaths(
+    db,
+    listManagedGraphicsElementPaths(db).map(toRelativeGraphicsElementPath),
+  );
+}
+
+function syncScheduleGraphics(
+  db: ReturnType<typeof openDb>,
+  channelNumber: string,
+  enabledIds: number[],
+):
+  | { skipped: true; reason: string }
+  | { skipped: false; items: number; links: number } {
+  const playout = getPlayoutForChannel(db, channelNumber);
+  if (!playout?.programScheduleId) {
+    return { skipped: true, reason: "no classic schedule" };
+  }
+
+  if (!isClassicSchedule(playout.scheduleKind)) {
+    return {
+      skipped: true,
+      reason: `schedule kind ${String(playout.scheduleKind)}`,
+    };
+  }
+
+  detachGraphicsFromScheduleItems(
+    db,
+    playout.programScheduleId,
+    managedGraphicsElementIds(db),
+  );
+
+  if (enabledIds.length === 0) {
+    return { skipped: false, items: 0, links: 0 };
+  }
+
+  const { items, links } = attachGraphicsToScheduleItems(
+    db,
+    playout.programScheduleId,
+    enabledIds,
+  );
+
+  return { skipped: false, items, links };
+}
+
+function requireGraphicsDeploySettings(settings: AppSettings): void {
   if (!settings.etvConfigPath?.trim()) {
     throw new Error("etvConfigPath is required to deploy graphics templates");
   }
@@ -97,22 +137,32 @@ export async function pushGraphicsToErsatzTv(
     throw new Error(`etvConfigPath not found: ${settings.etvConfigPath}`);
   }
 
+  if (!settings.etvDatabase?.trim()) {
+    throw new Error("etvDatabase is required");
+  }
+}
+
+/** Deploy per-channel Now/Mid/Next graphics and attach to classic schedules. */
+export async function pushGraphicsToErsatzTv(
+  settings: AppSettings,
+  progress: GraphicsProgress = () => undefined,
+): Promise<{ ok: boolean; message: string }> {
+  requireGraphicsDeploySettings(settings);
+
   if (!settings.etvOnDemandBaseUrl?.trim()) {
     throw new Error(
       "etvOnDemandBaseUrl is required (ETV fetches overlay PNGs from this app)",
     );
   }
 
-  if (!settings.etvDatabase?.trim()) {
-    throw new Error("etvDatabase is required");
-  }
-
   resetSchemaCache();
-  const targets = resolveTargetChannels(settings);
+  const allChannels = listAllChannelNumbers(settings);
+  const targets = resolveGraphicsTargetChannels(settings);
   const slots = enabledGraphicsSlots(settings);
+  const targetSet = new Set(targets);
 
   progress(
-    `Writing per-channel graphics templates for ${targets.length} channel(s)`,
+    `Writing per-channel graphics templates for ${targets.length}/${allChannels.length} channel(s)`,
   );
 
   const { written, removed } = writeGraphicsTemplates(settings, targets);
@@ -143,7 +193,6 @@ export async function pushGraphicsToErsatzTv(
       channelElementIds.set(channelNumber, ids);
     }
 
-    // Drop GraphicsElement rows for stale/shared templates we no longer keep.
     for (const stored of priorManaged) {
       const rel = toRelativeGraphicsElementPath(stored);
       if (keepRelPaths.has(rel)) continue;
@@ -153,52 +202,28 @@ export async function pushGraphicsToErsatzTv(
     }
   });
 
-  progress(`Attaching graphics to ${targets.length} channel schedule(s)`);
+  progress(`Syncing graphics on ${allChannels.length} channel schedule(s)`);
   let attachedSchedules = 0;
+  let clearedSchedules = 0;
   let totalLinks = 0;
 
-  for (const channelNumber of targets) {
-    const enabledIds = channelElementIds.get(channelNumber) ?? [];
-    const applied = await withWriteDb(settings.etvDatabase, progress, (db) => {
-      const playout = getPlayoutForChannel(db, channelNumber);
-      if (!playout?.programScheduleId) {
-        return { skipped: true as const, reason: "no classic schedule" };
-      }
+  for (const channelNumber of allChannels) {
+    const enabledIds = targetSet.has(channelNumber)
+      ? (channelElementIds.get(channelNumber) ?? [])
+      : [];
 
-      if (!isClassicSchedule(playout.scheduleKind)) {
-        return {
-          skipped: true as const,
-          reason: `schedule kind ${String(playout.scheduleKind)}`,
-        };
-      }
-
-      // Detach any promo-gen links (including other channels' leftovers).
-      const managedIds = graphicsElementIdsForRelativePaths(
-        db,
-        listManagedGraphicsElementPaths(db).map(toRelativeGraphicsElementPath),
-      );
-
-      detachGraphicsFromScheduleItems(
-        db,
-        playout.programScheduleId,
-        managedIds,
-      );
-
-      if (enabledIds.length === 0) {
-        return { skipped: false as const, items: 0, links: 0 };
-      }
-
-      const { items, links } = attachGraphicsToScheduleItems(
-        db,
-        playout.programScheduleId,
-        enabledIds,
-      );
-
-      return { skipped: false as const, items, links };
-    });
+    const applied = await withWriteDb(settings.etvDatabase, progress, (db) =>
+      syncScheduleGraphics(db, channelNumber, enabledIds),
+    );
 
     if (applied.skipped) {
       progress(`  #${channelNumber}: skip (${applied.reason})`);
+      continue;
+    }
+
+    if (enabledIds.length === 0) {
+      clearedSchedules += 1;
+      progress(`  #${channelNumber}: cleared overlay links`);
       continue;
     }
 
@@ -209,7 +234,64 @@ export async function pushGraphicsToErsatzTv(
     );
   }
 
-  const message = `Graphics deploy complete · ${written.length} template(s) · ${attachedSchedules} schedule(s) · ${totalLinks} link(s)`;
+  const message = `Graphics deploy complete · ${written.length} template(s) · ${attachedSchedules} attached · ${clearedSchedules} cleared · ${totalLinks} link(s)`;
+
+  progress(message);
+  log.info(message);
+  return { ok: true, message };
+}
+
+/** Remove all promo-gen graphics templates, DB rows, and schedule links. */
+export async function cleanupGraphicsFromErsatzTv(
+  settings: AppSettings,
+  progress: GraphicsProgress = () => undefined,
+): Promise<{ ok: boolean; message: string }> {
+  requireGraphicsDeploySettings(settings);
+
+  resetSchemaCache();
+  const allChannels = listAllChannelNumbers(settings);
+
+  progress("Removing all promo-gen graphics templates");
+  const { removed } = writeGraphicsTemplates(settings, []);
+  progress(`Templates removed: ${removed.length}`);
+
+  progress("Detaching overlays and deleting GraphicsElement rows");
+  let clearedSchedules = 0;
+  let deletedElements = 0;
+
+  await withWriteDb(settings.etvDatabase, progress, (db) => {
+    const managedPaths = listManagedGraphicsElementPaths(db);
+    const managedIds = managedGraphicsElementIds(db);
+
+    for (const channelNumber of allChannels) {
+      const playout = getPlayoutForChannel(db, channelNumber);
+      if (!playout?.programScheduleId) continue;
+      if (!isClassicSchedule(playout.scheduleKind)) continue;
+
+      detachGraphicsFromScheduleItems(
+        db,
+        playout.programScheduleId,
+        managedIds,
+      );
+
+      clearedSchedules += 1;
+      progress(`  #${channelNumber}: cleared overlay links`);
+    }
+
+    const seenRel = new Set<string>();
+    for (const stored of managedPaths) {
+      const rel = toRelativeGraphicsElementPath(stored);
+      if (seenRel.has(rel)) continue;
+
+      seenRel.add(rel);
+      deleteGraphicsElementByPath(db, rel);
+      deletedElements += 1;
+      progress(`Removed GraphicsElement ${rel}`);
+    }
+  });
+
+  const message = `Graphics cleanup complete · ${removed.length} template(s) · ${deletedElements} element(s) · ${clearedSchedules} schedule(s)`;
+
   progress(message);
   log.info(message);
   return { ok: true, message };

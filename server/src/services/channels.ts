@@ -1,5 +1,6 @@
 import {
   AppSettings,
+  canonicalizeChannelLanguage,
   ChannelOverrides,
   ChannelView,
   sanitizeChannelFolderName,
@@ -265,7 +266,9 @@ async function loadGuide(settings: AppSettings): Promise<GuideCache> {
     languageByNumber: new Map(
       apiChannels.map((c) => [
         String(c.number),
-        c.language || c.preferredAudioLanguageCode || "",
+        canonicalizeChannelLanguage(
+          c.language || c.preferredAudioLanguageCode || "",
+        ),
       ]),
     ),
   };
@@ -308,7 +311,11 @@ export async function resolveChannelLanguageMap(
   for (const n of channelNumbers) {
     out.set(
       n,
-      overrides[n]?.language?.trim() || languageByNumber.get(n)?.trim() || "en",
+      canonicalizeChannelLanguage(
+        overrides[n]?.language?.trim() ||
+          languageByNumber.get(n)?.trim() ||
+          "en",
+      ),
     );
   }
 
@@ -320,7 +327,7 @@ export async function resolveChannelLanguage(
   channelNumber: string,
   hint?: string,
 ): Promise<string> {
-  if (hint?.trim()) return hint.trim();
+  if (hint?.trim()) return canonicalizeChannelLanguage(hint);
   if (!channelNumber) return "en";
 
   const map = await resolveChannelLanguageMap(settings, [channelNumber]);
@@ -391,8 +398,9 @@ export async function loadChannelViews(
     for (const ch of m3u) {
       const override = overrides[ch.number];
       const color = override?.color ?? "#1a468d";
-      const language =
-        override?.language || languageByNumber.get(ch.number) || "en";
+      const language = canonicalizeChannelLanguage(
+        override?.language || languageByNumber.get(ch.number) || "en",
+      );
 
       const out = promoOutputFile(settings.outputPath, ch.name);
       const logoUrl = await ensureChannelLogo(settings, ch.number, ch.logoUrl);
@@ -415,6 +423,7 @@ export async function loadChannelViews(
         color,
         colorLocked: Boolean(override?.colorLocked),
         enabled: override?.enabled ?? true,
+        graphicsEnabled: override?.graphicsEnabled !== false,
         nextItems: [],
         promoExists: fileExists(out),
         promoUrl: fileExists(out)
@@ -437,8 +446,9 @@ export async function loadChannelViews(
 
     for (const ch of m3u) {
       const override = overrides[ch.number] ?? { enabled: true };
-      const language =
-        override.language || languageByNumber.get(ch.number) || "en";
+      const language = canonicalizeChannelLanguage(
+        override.language || languageByNumber.get(ch.number) || "en",
+      );
 
       let color = override.color;
       let colorLocked = Boolean(override.colorLocked);
@@ -562,6 +572,7 @@ export async function loadChannelViews(
         color,
         colorLocked,
         enabled: override.enabled ?? true,
+        graphicsEnabled: override.graphicsEnabled !== false,
         nextItems,
         currentItem,
         nextRegenAt,

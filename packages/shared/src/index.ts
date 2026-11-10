@@ -203,6 +203,11 @@ export interface AppSettings {
 
 export interface ChannelOverride {
   enabled: boolean;
+  /**
+   * When false, Push Graphics skips this channel and detaches overlays.
+   * Default true when unset.
+   */
+  graphicsEnabled?: boolean;
   language?: string;
   color?: string;
   colorLocked?: boolean;
@@ -245,11 +250,49 @@ export const CHANNEL_LANGUAGES = [
 
 export type ChannelLanguageCode = (typeof CHANNEL_LANGUAGES)[number]["code"];
 
+/** ISO 639-2/B (and a few aliases) → CHANNEL_LANGUAGES codes. */
+export const CHANNEL_LANGUAGE_ALIASES: Record<string, ChannelLanguageCode> = {
+  eng: "en",
+  ukr: "uk",
+  ua: "uk",
+  spa: "es",
+  fre: "fr",
+  fra: "fr",
+  ger: "de",
+  deu: "de",
+  ita: "it",
+  por: "pt",
+  dut: "nl",
+  nld: "nl",
+  pol: "pl",
+  jpn: "ja",
+  chi: "zh",
+  zho: "zh",
+  kor: "ko",
+};
+
+/** Map ETV/stream tags like `eng` to our UI/voice codes (`en`). */
+export function canonicalizeChannelLanguage(raw?: string): string {
+  if (!raw?.trim()) return "en";
+
+  const code = raw.trim().toLowerCase().replace(/_/g, "-");
+  const known = new Set<string>(CHANNEL_LANGUAGES.map((l) => l.code));
+  if (known.has(code)) return code;
+  if (CHANNEL_LANGUAGE_ALIASES[code]) return CHANNEL_LANGUAGE_ALIASES[code];
+
+  const base = code.split("-")[0] ?? code;
+  if (known.has(base)) return base;
+  if (CHANNEL_LANGUAGE_ALIASES[base]) return CHANNEL_LANGUAGE_ALIASES[base];
+
+  return raw.trim();
+}
+
 export type JobKind =
   | "generate"
   | "vo-prewarm"
   | "push"
   | "push-graphics"
+  | "cleanup-graphics"
   | "rollback"
   | "live-stream";
 
@@ -327,6 +370,8 @@ export interface ChannelView {
   color: string;
   colorLocked: boolean;
   enabled: boolean;
+  /** Channel Now/Mid/Next graphics overlays (default true). */
+  graphicsEnabled: boolean;
   nextItems: ScheduleItemPreview[];
   currentItem?: ScheduleItemPreview;
   nextRegenAt?: string;

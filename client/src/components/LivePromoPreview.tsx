@@ -150,11 +150,24 @@ export function LivePromoPreview(props: { src: string; channelLabel: string }) {
 
   return (
     <div className="live-preview active">
+      <div className="row">
+        <div className="row flex-1">
+          <span className="muted small">Live preview</span>
+          {starting && <span className="badge gen">Starting encode…</span>}
+        </div>
+        <button
+          type="button"
+          className="link-button muted small"
+          onClick={stopPreview}
+        >
+          Stop preview
+        </button>
+      </div>
       <video
         ref={videoRef}
         controls
         playsInline
-        muted
+        // muted
         autoPlay
         onError={() =>
           setError(
@@ -162,12 +175,6 @@ export function LivePromoPreview(props: { src: string; channelLabel: string }) {
           )
         }
       />
-      <div className="row">
-        <button type="button" onClick={stopPreview}>
-          Stop preview
-        </button>
-        {starting && <span className="muted">Starting encode…</span>}
-      </div>
       {error && <div className="error">{error}</div>}
     </div>
   );

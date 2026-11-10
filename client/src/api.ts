@@ -110,6 +110,11 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  cleanupGraphics: () =>
+    request<{ job: JobInfo }>("/api/cleanup-graphics", {
+      method: "POST",
+      body: "{}",
+    }),
   listBackups: () =>
     request<{ backups: EtvBackupInfo[]; latestPush: EtvBackupInfo | null }>(
       "/api/backups",

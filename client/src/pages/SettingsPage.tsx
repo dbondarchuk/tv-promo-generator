@@ -476,7 +476,9 @@ export function SettingsPage() {
           <strong>fade in/out</strong> via opacity expressions. Mid deploys two
           templates that reuse the Now/Next images: Now plays first, fades out,
           then Next fades in. Set <strong>ErsatzTV config path</strong> and use{" "}
-          <strong>Push Graphics</strong> on the Channels page to deploy.
+          <strong>Push Graphics</strong> on the Channels page to deploy. Use
+          per-channel <strong>Graphics</strong> On/Off, or{" "}
+          <strong>Remove Graphics</strong> to clear all overlays.
         </p>
       </section>
 

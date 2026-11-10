@@ -258,6 +258,7 @@ export function createRouter(opts: {
 
   router.patch("/channels/:number", (req, res) => {
     const overrides = updateChannelOverride(req.params.number, req.body ?? {});
+    invalidateChannelCaches();
     res.json(overrides[req.params.number]);
   });
 
@@ -513,6 +514,23 @@ export function createRouter(opts: {
     } catch (err) {
       log.error(
         "POST /push-graphics failed",
+        err instanceof Error ? err.message : String(err),
+      );
+
+      res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/cleanup-graphics", (_req, res) => {
+    try {
+      log.info("enqueue cleanup graphics");
+      const job = opts.jobs.enqueueCleanupGraphics();
+      res.json({ job });
+    } catch (err) {
+      log.error(
+        "POST /cleanup-graphics failed",
         err instanceof Error ? err.message : String(err),
       );
 

@@ -24,12 +24,20 @@ import {
   promoWindowFingerprint,
   promoWindowsFromPrimaries,
 } from "./fingerprint.js";
-import { pushGraphicsToErsatzTv } from "./push-graphics.js";
+import {
+  cleanupGraphicsFromErsatzTv,
+  pushGraphicsToErsatzTv,
+} from "./push-graphics.js";
 import { pushToErsatzTv } from "./push.js";
 
 const log = createLogger("jobs");
 const MAX_LOGS_PER_JOB = 400;
-const BLOCKING_KINDS: JobKind[] = ["push", "push-graphics", "rollback"];
+const BLOCKING_KINDS: JobKind[] = [
+  "push",
+  "push-graphics",
+  "cleanup-graphics",
+  "rollback",
+];
 
 /** Waiting or in-flight — includes legacy status "late" used as a queue state. */
 function isPendingStatus(status: JobInfo["status"]): boolean {
@@ -267,6 +275,15 @@ export class JobQueue {
     });
   }
 
+  enqueueCleanupGraphics(): JobInfo {
+    return this.enqueueBlocking({
+      kind: "cleanup-graphics",
+      channelNumber: "cleanup-graphics",
+      channelName: "Remove Graphics",
+      pauseMessage: "Paused — waiting for Remove Graphics to finish",
+    });
+  }
+
   enqueueRollback(backupId?: string): JobInfo {
     return this.enqueueBlocking({
       kind: "rollback",
@@ -354,7 +371,7 @@ export class JobQueue {
   }
 
   private enqueueBlocking(opts: {
-    kind: "push" | "push-graphics" | "rollback";
+    kind: "push" | "push-graphics" | "cleanup-graphics" | "rollback";
     channelNumber: string;
     channelName: string;
     backupId?: string;
@@ -552,6 +569,8 @@ export class JobQueue {
         await this.runPushJob(job);
       } else if (job.kind === "push-graphics") {
         await this.runPushGraphicsJob(job);
+      } else if (job.kind === "cleanup-graphics") {
+        await this.runCleanupGraphicsJob(job);
       } else if (job.kind === "rollback") {
         await this.runRollbackJob(job);
       } else if (job.kind === "vo-prewarm") {
@@ -731,6 +750,24 @@ export class JobQueue {
     };
 
     const result = await pushGraphicsToErsatzTv(settings, onProgress);
+    job.finishedAt = new Date().toISOString();
+    if (result.ok) {
+      job.status = "succeeded";
+      this.appendLog(job.id, "info", result.message, false);
+    } else {
+      job.status = "failed";
+      job.error = result.message;
+      this.appendLog(job.id, "error", result.message, false);
+    }
+  }
+
+  private async runCleanupGraphicsJob(job: InternalJob): Promise<void> {
+    const settings = this.settingsProvider();
+    const onProgress = (message: string, level: JobLogLevel = "info") => {
+      this.appendLog(job.id, level, message);
+    };
+
+    const result = await cleanupGraphicsFromErsatzTv(settings, onProgress);
     job.finishedAt = new Date().toISOString();
     if (result.ok) {
       job.status = "succeeded";

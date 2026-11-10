@@ -6,6 +6,7 @@ import type {
   PromoDeliveryMode,
 } from "@promo/shared";
 import {
+  canonicalizeChannelLanguage,
   CHANNEL_LANGUAGES,
   FILLER_PLACEMENT_LABELS,
   FILLER_PLACEMENTS,
@@ -29,14 +30,27 @@ const KNOWN_LANGUAGE_CODES = new Set<string>(
 );
 
 function languageSelectValue(raw: string): string {
-  const code = raw.trim().toLowerCase();
-  if (KNOWN_LANGUAGE_CODES.has(code)) return code;
-  if (code === "ukr" || code === "ua") return "uk";
+  return canonicalizeChannelLanguage(raw);
+}
 
-  const base = code.split(/[-_]/)[0] ?? code;
-  if (KNOWN_LANGUAGE_CODES.has(base)) return base;
+function languageLabel(raw: string): string {
+  const code = languageSelectValue(raw);
+  return CHANNEL_LANGUAGES.find((lang) => lang.code === code)?.label ?? raw;
+}
 
-  return raw;
+function etvMediaItemUrl(etvUrl: string, mediaItemId: number): string {
+  const base = etvUrl.replace(/\/+$/, "");
+  return `${base}/media/items/${mediaItemId}`;
+}
+
+function formatScheduleRange(startIso: string, finishIso: string): string {
+  const start = new Date(startIso);
+  const finish = new Date(finishIso);
+  if (start.toDateString() === finish.toDateString()) {
+    return `${start.toLocaleString()} – ${finish.toLocaleTimeString()}`;
+  }
+
+  return `${start.toLocaleString()} – ${finish.toLocaleString()}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -59,6 +73,7 @@ export function ChannelsPage() {
   const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [etvUrl, setEtvUrl] = useState("");
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [promoDeliveryMode, setPromoDeliveryMode] =
     useState<PromoDeliveryMode>("remote-stream");
@@ -101,6 +116,7 @@ export function ChannelsPage() {
         (j) =>
           (j.kind === "push" ||
             j.kind === "push-graphics" ||
+            j.kind === "cleanup-graphics" ||
             j.kind === "rollback") &&
           (j.status === "queued" || j.status === "running"),
       ),
@@ -199,6 +215,15 @@ export function ChannelsPage() {
   }, []);
 
   useEffect(() => {
+    if (!configured) return;
+
+    api
+      .getSettings()
+      .then((settings) => setEtvUrl(settings.etvUrl?.trim() ?? ""))
+      .catch(() => setEtvUrl(""));
+  }, [configured]);
+
+  useEffect(() => {
     if (configured === false) return;
 
     void refreshChannels();
@@ -227,6 +252,7 @@ export function ChannelsPage() {
           if (
             (j.kind === "push" ||
               j.kind === "push-graphics" ||
+              j.kind === "cleanup-graphics" ||
               j.kind === "rollback") &&
             (j.status === "succeeded" || j.status === "failed") &&
             j.finishedAt &&
@@ -252,6 +278,7 @@ export function ChannelsPage() {
             (job) =>
               (job.kind === "push" ||
                 job.kind === "push-graphics" ||
+                job.kind === "cleanup-graphics" ||
                 job.kind === "rollback") &&
               job.status === "running",
           );
@@ -369,6 +396,30 @@ export function ChannelsPage() {
     setError("");
     try {
       const { job } = await api.pushGraphics();
+      userExpandedRef.current = true;
+      setExpandedJobId(job.id);
+      stickToBottomRef.current = true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cleanupGraphics() {
+    if (
+      !window.confirm(
+        "Remove all Promo Generator graphics from ErsatzTV?\n\n" +
+          "This deletes overlay templates, GraphicsElement rows, and schedule links.",
+      )
+    ) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const { job } = await api.cleanupGraphics();
       userExpandedRef.current = true;
       setExpandedJobId(job.id);
       stickToBottomRef.current = true;
@@ -629,6 +680,14 @@ export function ChannelsPage() {
               Push Graphics
             </button>
             <button
+              className="secondary"
+              disabled={busy || exclusiveActive}
+              title="Remove all Promo Generator graphics from ErsatzTV"
+              onClick={() => void cleanupGraphics()}
+            >
+              Remove Graphics
+            </button>
+            <button
               className="danger"
               disabled={busy || exclusiveActive || !latestPushBackup}
               title={
@@ -682,7 +741,9 @@ export function ChannelsPage() {
             const latest = j.logs?.[j.logs.length - 1];
             const kind = j.kind ?? "generate";
             const kindClass =
-              kind === "push" || kind === "push-graphics"
+              kind === "push" ||
+              kind === "push-graphics" ||
+              kind === "cleanup-graphics"
                 ? "push"
                 : kind === "rollback"
                   ? "rollback"
@@ -781,7 +842,7 @@ export function ChannelsPage() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{ch.name}</div>
                 <div className="muted">
-                  #{ch.number} · {ch.language}
+                  #{ch.number} · {languageLabel(ch.language)}
                 </div>
               </div>
               <span
@@ -792,20 +853,6 @@ export function ChannelsPage() {
             </header>
             <div className="body">
               <div className="row">
-                <label style={{ flex: "0 0 auto" }}>
-                  Enabled
-                  <select
-                    value={ch.enabled ? "1" : "0"}
-                    onChange={(e) =>
-                      void patchChannel(ch.number, {
-                        enabled: e.target.value === "1",
-                      })
-                    }
-                  >
-                    <option value="1">Yes</option>
-                    <option value="0">No</option>
-                  </select>
-                </label>
                 <label style={{ flex: "0 0 auto" }}>
                   Color
                   <input
@@ -842,127 +889,224 @@ export function ChannelsPage() {
                 </label>
               </div>
 
-              {ch.currentItem && (
-                <div className="muted">Now: {ch.currentItem.title}</div>
-              )}
-              {ch.nextRegenAt && (
-                <div className="muted">
-                  Next regen by {new Date(ch.nextRegenAt).toLocaleString()}
+              <section className="channel-section">
+                <div className="channel-section-head">
+                  <h3>Schedule</h3>
                 </div>
-              )}
 
-              <h3 style={{ fontSize: 14, marginTop: 4 }}>
-                Next {ch.nextItems.length || "items"}
-              </h3>
-              <ul className="item-list">
-                {ch.nextItems.length === 0 && (
-                  <li className="muted">No upcoming items</li>
-                )}
-                {ch.nextItems.map((item) => (
-                  <li key={`${item.mediaItemId}-${item.start}`}>
-                    <div>
-                      <strong>{item.title}</strong>
-                    </div>
-                    <div className="muted">
-                      {item.seasonNumber != null && item.episodeNumber != null
-                        ? `S${item.seasonNumber}E${item.episodeNumber}${item.episodeTitle ? ` - ${item.episodeTitle}` : ""}`
-                        : item.episodeTitle || "—"}
-                    </div>
-                    <div className="muted">
-                      {new Date(item.start).toLocaleString()}
-                    </div>
-                    {item.error ? (
-                      <div className="error">{item.error}</div>
-                    ) : (
-                      <div className="success">{item.filePath}</div>
-                    )}
-                  </li>
-                ))}
-              </ul>
+                <h4 className="channel-subsection-title">Now</h4>
+                <ul className="item-list">
+                  {ch.currentItem ? (
+                    <li>
+                      <div className="schedule-item-title">
+                        <strong>{ch.currentItem.title}</strong>
+                        {etvUrl ? (
+                          <a
+                            className="media-item-link"
+                            href={etvMediaItemUrl(
+                              etvUrl,
+                              ch.currentItem.mediaItemId,
+                            )}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open in ErsatzTV"
+                          >
+                            #{ch.currentItem.mediaItemId}
+                          </a>
+                        ) : (
+                          <span className="muted">
+                            #{ch.currentItem.mediaItemId}
+                          </span>
+                        )}
+                      </div>
+                      <div className="muted">
+                        {ch.currentItem.seasonNumber != null &&
+                        ch.currentItem.episodeNumber != null
+                          ? `S${ch.currentItem.seasonNumber}E${ch.currentItem.episodeNumber}${ch.currentItem.episodeTitle ? ` - ${ch.currentItem.episodeTitle}` : ""}`
+                          : ch.currentItem.episodeTitle || "—"}
+                      </div>
+                      <div className="muted">
+                        {formatScheduleRange(
+                          ch.currentItem.start,
+                          ch.currentItem.finish,
+                        )}
+                      </div>
+                    </li>
+                  ) : (
+                    <li className="muted">Nothing airing now</li>
+                  )}
+                </ul>
 
-              <GraphicsOverlayPreview
-                channelNumber={ch.number}
-                channelName={ch.name}
-                language={ch.language}
-                mediaItemId={
-                  ch.currentItem?.mediaItemId ?? ch.nextItems[0]?.mediaItemId
-                }
-              />
+                <h4 className="channel-subsection-title">
+                  Next {ch.nextItems.length || "items"}
+                </h4>
+                <ul className="item-list">
+                  {ch.nextItems.length === 0 && (
+                    <li className="muted">No upcoming items</li>
+                  )}
+                  {ch.nextItems.map((item) => (
+                    <li key={`${item.mediaItemId}-${item.start}`}>
+                      <div className="schedule-item-title">
+                        <strong>{item.title}</strong>
+                        {etvUrl ? (
+                          <a
+                            className="media-item-link"
+                            href={etvMediaItemUrl(etvUrl, item.mediaItemId)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open in ErsatzTV"
+                          >
+                            #{item.mediaItemId}
+                          </a>
+                        ) : (
+                          <span className="muted">#{item.mediaItemId}</span>
+                        )}
+                      </div>
+                      <div className="muted">
+                        {item.seasonNumber != null && item.episodeNumber != null
+                          ? `S${item.seasonNumber}E${item.episodeNumber}${item.episodeTitle ? ` - ${item.episodeTitle}` : ""}`
+                          : item.episodeTitle || "—"}
+                      </div>
+                      <div className="muted">
+                        {formatScheduleRange(item.start, item.finish)}
+                      </div>
+                      {item.error ? (
+                        <div className="error">{item.error}</div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </section>
 
-              <div className="flex-1" />
-
-              {fileMode && ch.promoExists && ch.promoUrl ? (
-                <video
-                  key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
-                  controls
-                  src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
-                />
-              ) : ch.livePromoUrl && ch.enabled && ch.nextItems.length > 0 ? (
-                <LivePromoPreview
-                  src={ch.livePromoUrl}
-                  channelLabel={ch.name}
-                />
-              ) : ch.promoExists && ch.promoUrl ? (
-                <video
-                  key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
-                  controls
-                  src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
-                />
-              ) : (
-                <div className="muted">
-                  {ch.enabled
-                    ? fileMode
-                      ? "No baked promo yet — Generate to create next-items.mp4."
-                      : "No upcoming items to preview."
-                    : "Enable channel to preview promo."}
+              <section className="channel-section">
+                <div className="channel-section-head">
+                  <h3>Overlay</h3>
+                  <label
+                    className="switch"
+                    title="Now/Mid/Next overlays (Push Graphics to apply)"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={ch.graphicsEnabled}
+                      onChange={(e) =>
+                        void patchChannel(ch.number, {
+                          graphicsEnabled: e.target.checked,
+                        })
+                      }
+                    />
+                    <span className="switch-track" aria-hidden />
+                  </label>
                 </div>
-              )}
-              {ch.lastError && <div className="error">{ch.lastError}</div>}
+                <GraphicsOverlayPreview
+                  channelNumber={ch.number}
+                  channelName={ch.name}
+                  language={languageSelectValue(ch.language)}
+                  mediaItemId={
+                    ch.currentItem?.mediaItemId ?? ch.nextItems[0]?.mediaItemId
+                  }
+                />
+              </section>
 
-              <div className="row">
-                {fileMode && (
-                  <button
-                    disabled={busy || exclusiveActive || !ch.enabled}
-                    title={
-                      exclusiveActive
-                        ? "Paused while push/rollback is running"
-                        : "Bake next-items.mp4 for this channel"
-                    }
-                    onClick={() => void generateOne(ch.number)}
+              <section className="channel-section">
+                <div className="channel-section-head">
+                  <div className="row">
+                    <h3>Video</h3>{" "}
+                    <div className="row">
+                      {generateBadgeByChannel.get(ch.number) === "running" && (
+                        <span className="badge warn">generating</span>
+                      )}
+                      {generateBadgeByChannel.get(ch.number) === "queued" && (
+                        <span className="badge">generate queued</span>
+                      )}
+                      {liveStreamByChannel.has(ch.number) && (
+                        <span className="badge live">live stream</span>
+                      )}
+                      {voJobBadgeByChannel.get(ch.number) === "warming" && (
+                        <span className="badge warn">warming VO</span>
+                      )}
+                      {voJobBadgeByChannel.get(ch.number) === "queued" && (
+                        <span className="badge">VO in queue</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <label
+                    className="switch"
+                    title="Enable promo video for this channel"
                   >
-                    Generate
-                  </button>
+                    <input
+                      type="checkbox"
+                      checked={ch.enabled}
+                      onChange={(e) =>
+                        void patchChannel(ch.number, {
+                          enabled: e.target.checked,
+                        })
+                      }
+                    />
+                    <span className="switch-track" aria-hidden />
+                  </label>
+                </div>
+
+                {fileMode && ch.nextRegenAt && (
+                  <div className="muted">
+                    Next regen by {new Date(ch.nextRegenAt).toLocaleString()}
+                  </div>
                 )}
-                {voiceEnabled && (
-                  <button
-                    className={fileMode ? "secondary" : undefined}
-                    disabled={busy || exclusiveActive || !ch.enabled}
-                    title={
-                      exclusiveActive
-                        ? "Paused while push/rollback is running"
-                        : "Pre-synthesize voice for upcoming items"
-                    }
-                    onClick={() => void voPrewarmOne(ch.number)}
-                  >
-                    Warm VO
-                  </button>
+
+                <div className="flex-1" />
+
+                {fileMode ? (
+                  ch.promoExists && ch.promoUrl ? (
+                    <video
+                      key={ch.promoUrl + (ch.lastGeneratedAt ?? "")}
+                      controls
+                      src={`${ch.promoUrl}?t=${encodeURIComponent(ch.lastGeneratedAt ?? "")}`}
+                    />
+                  ) : (
+                    <div className="muted">
+                      No baked promo yet — Generate to create next-items.mp4.
+                    </div>
+                  )
+                ) : ch.livePromoUrl && ch.nextItems.length > 0 ? (
+                  <LivePromoPreview
+                    src={ch.livePromoUrl}
+                    channelLabel={ch.name}
+                  />
+                ) : (
+                  <div className="muted">No upcoming items to preview.</div>
                 )}
-                {generateBadgeByChannel.get(ch.number) === "running" && (
-                  <span className="badge warn">generating</span>
-                )}
-                {generateBadgeByChannel.get(ch.number) === "queued" && (
-                  <span className="badge">generate queued</span>
-                )}
-                {liveStreamByChannel.has(ch.number) && (
-                  <span className="badge live">live stream</span>
-                )}
-                {voJobBadgeByChannel.get(ch.number) === "warming" && (
-                  <span className="badge warn">warming VO</span>
-                )}
-                {voJobBadgeByChannel.get(ch.number) === "queued" && (
-                  <span className="badge">VO in queue</span>
-                )}
-              </div>
+                {ch.lastError && <div className="error">{ch.lastError}</div>}
+
+                <div className="row">
+                  {fileMode && (
+                    <button
+                      disabled={busy || exclusiveActive || !ch.enabled}
+                      title={
+                        exclusiveActive
+                          ? "Paused while push/rollback is running"
+                          : "Bake next-items.mp4 for this channel"
+                      }
+                      onClick={() => void generateOne(ch.number)}
+                    >
+                      Generate
+                    </button>
+                  )}
+                  {voiceEnabled && (
+                    <button
+                      className={fileMode ? "secondary" : undefined}
+                      disabled={busy || exclusiveActive || !ch.enabled}
+                      title={
+                        exclusiveActive
+                          ? "Paused while push/rollback is running"
+                          : "Pre-synthesize voice for upcoming items"
+                      }
+                      onClick={() => void voPrewarmOne(ch.number)}
+                    >
+                      Warm VO
+                    </button>
+                  )}
+                </div>
+              </section>
             </div>
           </article>
         ))}
