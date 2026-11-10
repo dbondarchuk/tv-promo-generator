@@ -6,6 +6,7 @@ import {
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import { sqlUtcSqliteMs, toUtcSqliteMs } from "./time.js";
 
 export interface DbSchema {
   tables: Set<string>;
@@ -356,14 +357,15 @@ export function getCurrentPrimaryItem(
     LEFT JOIN MediaVersion mv ON (${versionJoin})
     LEFT JOIN ${quoteIdent(mediaFileTable)} mf ON mf.MediaVersionId = mv.Id
     WHERE c.Number = ?
-      AND pi.Start <= ?
-      AND pi.Finish > ?
+      AND ${sqlUtcSqliteMs("pi.Start")} <= ?
+      AND ${sqlUtcSqliteMs("pi.Finish")} > ?
       AND IFNULL(pi.FillerKind, 0) = 0
     ORDER BY pi.Start DESC
     LIMIT 1
   `;
 
-  return db.prepare(sql).get(channelNumber, nowUtcIso, nowUtcIso) as
+  const atMs = toUtcSqliteMs(nowUtcIso);
+  return db.prepare(sql).get(channelNumber, atMs, atMs) as
     PlayoutRow | undefined;
 }
 
