@@ -10,6 +10,7 @@ import {
   openDb,
   type GraphicsMediaContext,
 } from "../ersatztv/db.js";
+import { toUtcSqlite } from "../ersatztv/time.js";
 import { runFfmpegStdout } from "../ffmpeg/run.js";
 import { createLogger } from "../util/log.js";
 import { rewritePath } from "../util/paths.js";
@@ -258,20 +259,28 @@ function phaseCopy(
   return { headline: t.nowOn(channelName), lines };
 }
 
-/** Normalize ETV MediaItem_Start / query `at` into an ISO UTC string. */
+/**
+ * Normalize ETV MediaItem_Start / query `at` into ErsatzTV's naive-UTC
+ * sqlite form (`yyyy-MM-dd HH:mm:ss.fff`). PlayoutItem.Start/Finish are
+ * compared as strings — ISO `T…Z` form picks the wrong row.
+ */
 export function parseOverlayAt(raw?: string): string | undefined {
   if (!raw?.trim()) return undefined;
 
   const trimmed = raw.trim();
   const asNum = Number(trimmed);
   if (Number.isFinite(asNum) && asNum > 1_000_000_000) {
-    // Unix seconds or ms
     const ms = asNum > 1_000_000_000_000 ? asNum : asNum * 1000;
-    return new Date(ms).toISOString();
+    return toUtcSqlite(new Date(ms));
+  }
+
+  // Already sqlite-shaped (space separator, optional fractional seconds).
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(trimmed)) {
+    return trimmed;
   }
 
   const parsed = new Date(trimmed);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  if (!Number.isNaN(parsed.getTime())) return toUtcSqlite(parsed);
 
   return undefined;
 }
@@ -286,7 +295,7 @@ function resolveOverlayMediaItemId(
   atUtcIso?: string;
 } {
   const channelNumber = hints.channelNumber?.trim();
-  const atUtcIso = parseOverlayAt(hints.at) ?? new Date().toISOString();
+  const atUtcIso = parseOverlayAt(hints.at) ?? toUtcSqlite(new Date());
 
   if (channelNumber) {
     const db = openDb(settings.etvDatabase, true);
