@@ -21,6 +21,7 @@ import {
 } from "./config.js";
 import { EtvApiClient } from "./ersatztv/api.js";
 import { parseM3u } from "./ersatztv/m3u.js";
+import { withStreamingFlags } from "./services/channel-streaming.js";
 import {
   invalidateChannelCaches,
   loadChannelViews,
@@ -213,13 +214,13 @@ export function createRouter(opts: {
     try {
       const settings = opts.getSettings();
       const channels = await loadChannelViews(settings);
-      const enriched = channels.map((c) => ({
+      const withJobs = channels.map((c) => ({
         ...c,
         lastGeneratedAt: opts.jobs.getLastGenerated(c.number),
         lastError: c.lastError ?? opts.jobs.getLastError(c.number),
       }));
 
-      res.json(enriched);
+      res.json(await withStreamingFlags(settings, withJobs));
     } catch (err) {
       log.error(
         "GET /channels failed",
@@ -237,13 +238,13 @@ export function createRouter(opts: {
     try {
       const settings = opts.getSettings();
       const channels = await refreshChannelViews(settings);
-      const enriched = channels.map((c) => ({
+      const withJobs = channels.map((c) => ({
         ...c,
         lastGeneratedAt: opts.jobs.getLastGenerated(c.number),
         lastError: c.lastError ?? opts.jobs.getLastError(c.number),
       }));
 
-      res.json(enriched);
+      res.json(await withStreamingFlags(settings, withJobs));
     } catch (err) {
       log.error(
         "POST /channels/refresh failed",

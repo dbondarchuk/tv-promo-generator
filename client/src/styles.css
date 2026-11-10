@@ -174,6 +174,12 @@ a.button {
   padding: 14px;
   border-bottom: 1px solid var(--border);
 }
+.channel-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .channel-card header img {
   width: 48px;
   height: 48px;
@@ -338,6 +344,23 @@ a.button {
 .badge.push { color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.35); }
 .badge.rollback { color: #fca5a5; border: 1px solid rgba(252, 165, 165, 0.35); }
 .badge.live { color: #6ee7b7; border: 1px solid rgba(110, 231, 183, 0.4); }
+.badge.streaming {
+  color: #fca5a5;
+  border: 1px solid rgba(252, 165, 165, 0.4);
+}
+.badge.streaming::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f87171;
+  box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.55);
+  animation: streaming-pulse 1.6s ease-out infinite;
+}
+@keyframes streaming-pulse {
+  70% { box-shadow: 0 0 0 6px rgba(248, 113, 113, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); }
+}
 .badge.gen { color: var(--muted); }
 .job-block.job-push { border-color: rgba(147, 197, 253, 0.35); }
 .job-block.job-rollback { border-color: rgba(252, 165, 165, 0.35); }

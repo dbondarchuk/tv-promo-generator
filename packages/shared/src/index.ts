@@ -49,6 +49,26 @@ export function isVoiceProvider(value: unknown): value is VoiceProvider {
   );
 }
 
+/**
+ * When to auto-enqueue VO prewarm (remote-stream).
+ * Manual Warm VO always works regardless of mode.
+ */
+export const VO_PREWARM_MODES = ["off", "schedule", "sessions"] as const;
+export type VoPrewarmMode = (typeof VO_PREWARM_MODES)[number];
+
+export const VO_PREWARM_MODE_LABELS: Record<VoPrewarmMode, string> = {
+  off: "Off (manual only)",
+  schedule: "On schedule (all channels)",
+  sessions: "When ETV session active",
+};
+
+export function isVoPrewarmMode(value: unknown): value is VoPrewarmMode {
+  return (
+    typeof value === "string" &&
+    (VO_PREWARM_MODES as readonly string[]).includes(value)
+  );
+}
+
 /** Number of next-items featured in a promo (duration = count × 10s). */
 export const PROMO_ITEM_COUNTS = [1, 2, 3] as const;
 export type PromoItemCount = (typeof PROMO_ITEM_COUNTS)[number];
@@ -137,6 +157,11 @@ export interface AppSettings {
   videoPreset: string;
   videoProfile: string;
   voiceEnabled: boolean;
+  /**
+   * Auto VO prewarm policy for remote-stream delivery.
+   * `sessions` gates on ETV `GET /api/sessions` (active viewers).
+   */
+  voPrewarmMode: VoPrewarmMode;
   regenLeadMinutes: number;
   /** IANA timezone for on-screen / VO start times (e.g. America/New_York). Empty = process default. */
   timeZone: string;
@@ -386,6 +411,8 @@ export interface ChannelView {
   livePromoUrl?: string;
   lastError?: string;
   lastGeneratedAt?: string;
+  /** True when ErsatzTV reports an active streaming session for this channel. */
+  streaming?: boolean;
 }
 
 export interface PushChannelResult {
@@ -454,6 +481,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   videoPreset: "medium",
   videoProfile: "high",
   voiceEnabled: true,
+  voPrewarmMode: "sessions",
   regenLeadMinutes: 3,
   timeZone: "",
   lowerThirdFullWidth: false,

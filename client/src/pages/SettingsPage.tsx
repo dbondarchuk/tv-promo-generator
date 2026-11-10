@@ -9,6 +9,7 @@ import type {
   ValidateSettingsResult,
   VideoCodec,
   VoiceProvider,
+  VoPrewarmMode,
 } from "@promo/shared";
 import {
   CHANNEL_LANGUAGES,
@@ -19,6 +20,8 @@ import {
   PROMO_ITEM_COUNTS,
   SHOW_VOICE_DETAIL_LABELS,
   SHOW_VOICE_DETAILS,
+  VO_PREWARM_MODE_LABELS,
+  VO_PREWARM_MODES,
   VOICE_PROVIDER_LABELS,
   VOICE_PROVIDERS,
 } from "@promo/shared";
@@ -553,6 +556,28 @@ export function SettingsPage() {
               <option value="false">Off</option>
             </select>
           </label>
+          {settings.voiceEnabled && (
+            <label>
+              Auto VO prewarm
+              <select
+                value={settings.voPrewarmMode ?? "sessions"}
+                onChange={(e) => {
+                  setSettings({
+                    ...settings,
+                    voPrewarmMode: e.target.value as VoPrewarmMode,
+                  });
+
+                  setValidation(null);
+                }}
+              >
+                {VO_PREWARM_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {VO_PREWARM_MODE_LABELS[mode]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
 
         {settings.voiceEnabled && (

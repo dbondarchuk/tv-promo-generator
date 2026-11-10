@@ -1,4 +1,7 @@
 import { createLogger } from "../util/log.js";
+import { parseEtvSessions, type EtvApiSession } from "./sessions.js";
+
+export type { EtvApiSession } from "./sessions.js";
 
 export interface EtvApiChannel {
   id: number;
@@ -123,6 +126,15 @@ export class EtvApiClient {
 
   getChannels(): Promise<EtvApiChannel[]> {
     return this.getJson<EtvApiChannel[]>("api/channels");
+  }
+
+  /**
+   * Active transcoding sessions (channel currently being watched / previewed).
+   * Accepts both camelCase and PascalCase JSON from ETV.
+   */
+  async getSessions(): Promise<EtvApiSession[]> {
+    const raw = await this.getJson<unknown>("api/sessions");
+    return parseEtvSessions(raw);
   }
 
   /**

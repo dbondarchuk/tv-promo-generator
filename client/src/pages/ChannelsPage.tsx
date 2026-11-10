@@ -840,7 +840,17 @@ export function ChannelsPage() {
                 />
               )}
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700 }}>{ch.name}</div>
+                <div className="channel-card-title">
+                  <span style={{ fontWeight: 700 }}>{ch.name}</span>
+                  {ch.streaming && (
+                    <span
+                      className="badge streaming"
+                      title="ETV session active"
+                    >
+                      streaming
+                    </span>
+                  )}
+                </div>
                 <div className="muted">
                   #{ch.number} · {languageLabel(ch.language)}
                 </div>

@@ -7,6 +7,7 @@ import {
   isPromoItemCount,
   isShowVoiceDetail,
   isVoiceProvider,
+  isVoPrewarmMode,
 } from "@promo/shared";
 import fs from "node:fs";
 import path from "node:path";
@@ -207,6 +208,10 @@ function normalizeSettings(
 
   if (!isVoiceProvider(merged.voiceProvider)) {
     merged.voiceProvider = DEFAULT_SETTINGS.voiceProvider;
+  }
+
+  if (!isVoPrewarmMode(merged.voPrewarmMode)) {
+    merged.voPrewarmMode = DEFAULT_SETTINGS.voPrewarmMode;
   }
 
   if (!Number.isFinite(merged.sourceAudioVolume)) {

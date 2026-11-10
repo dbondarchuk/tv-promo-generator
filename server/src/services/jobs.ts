@@ -11,24 +11,18 @@ import path from "node:path";
 import { renderPromo } from "../promo/render.js";
 import { createLogger } from "../util/log.js";
 import { promoOutputFile } from "../util/paths.js";
-import { recordVoiceGeneration } from "../voice/ledger.js";
-import { synthesizeVoiceOver, voiceCacheKey } from "../voice/tts.js";
 import {
   buildPromoChaptersForChannel,
   getFontFile,
   invalidateChannelCaches,
-  listUpcomingPromoMeta,
 } from "./channels.js";
 import { rollbackErsatzTvDatabase } from "./etv-backup.js";
-import {
-  promoWindowFingerprint,
-  promoWindowsFromPrimaries,
-} from "./fingerprint.js";
 import {
   cleanupGraphicsFromErsatzTv,
   pushGraphicsToErsatzTv,
 } from "./push-graphics.js";
 import { pushToErsatzTv } from "./push.js";
+import { runVoPrewarmForChannel } from "./vo-prewarm-run.js";
 
 const log = createLogger("jobs");
 const MAX_LOGS_PER_JOB = 400;
@@ -596,89 +590,14 @@ export class JobQueue {
 
   private async runVoPrewarmJob(job: InternalJob): Promise<void> {
     const settings = this.settingsProvider();
-    if (!settings.voiceEnabled) {
-      this.appendLog(job.id, "info", "Voice disabled — skipping VO prewarm");
-      job.status = "succeeded";
-      job.finishedAt = new Date().toISOString();
-      return;
-    }
-
-    const meta = await listUpcomingPromoMeta(settings, job.channelNumber);
-    const { current, lookAhead } = promoWindowsFromPrimaries(
-      meta.items,
-      settings.promoItemCount ?? 3,
+    await runVoPrewarmForChannel(
+      settings,
+      job.channelNumber,
+      (level, message) => this.appendLog(job.id, level, message),
     );
-
-    const windows = [
-      { label: "current", items: current },
-      { label: "look-ahead", items: lookAhead },
-    ];
-
-    for (const window of windows) {
-      if (window.items.length === 0) continue;
-
-      const fingerprint = promoWindowFingerprint(
-        settings,
-        window.items.map((i) => ({
-          mediaItemId: i.mediaItemId,
-          start: i.start,
-        })),
-      );
-
-      this.appendLog(
-        job.id,
-        "info",
-        `Warming VO (${window.label}) · ${window.items.length} item(s) · fp ${fingerprint.slice(0, 8)}…`,
-      );
-
-      const hashes: string[] = [];
-      for (let i = 0; i < window.items.length; i++) {
-        const item = window.items[i]!;
-        const input = {
-          channelName: meta.channelName,
-          title: item.title,
-          episodeTitle: item.episodeTitle,
-          seasonNumber: item.seasonNumber,
-          episodeNumber: item.episodeNumber,
-          cue: (i === 0 ? "next" : "after") as "next" | "after",
-          showVoiceDetail: settings.showVoiceDetail,
-        };
-
-        const key = voiceCacheKey(settings, meta.language, input);
-        hashes.push(key.hash);
-        this.appendLog(
-          job.id,
-          "info",
-          `  ${i + 1}. ${item.title} → ${key.hash.slice(0, 10)}…`,
-        );
-
-        const voice = await synthesizeVoiceOver(
-          settings,
-          settings.cachePath,
-          meta.language,
-          input,
-        );
-
-        if (voice.error) {
-          this.appendLog(job.id, "warn", `  Voice: ${voice.error}`);
-        } else if (voice.cached) {
-          this.appendLog(job.id, "info", `  Cache hit (${voice.voice})`);
-        } else {
-          this.appendLog(job.id, "info", `  Synthesized (${voice.voice})`);
-        }
-      }
-
-      recordVoiceGeneration(
-        settings.cachePath,
-        job.channelNumber,
-        fingerprint,
-        hashes,
-      );
-    }
 
     job.status = "succeeded";
     job.finishedAt = new Date().toISOString();
-    this.appendLog(job.id, "info", "VO prewarm complete", false);
   }
 
   private async runGenerateJob(job: InternalJob): Promise<void> {
