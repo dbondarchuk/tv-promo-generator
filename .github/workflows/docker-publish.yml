@@ -30,6 +30,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Windows-generated lockfiles can omit Linux optional natives for sharp.
+      - name: Ensure sharp linux-x64 binary
+        run: npm install --no-save --os=linux --cpu=x64 sharp
+
       - name: Build shared + typecheck
         run: |
           npm run build -w @promo/shared
